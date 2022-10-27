@@ -2,6 +2,8 @@ package main
 
 import "lib:iris"
 
+theme: iris.User_Interface_Theme
+
 main :: proc() {
 	iris.init_app(
 		&iris.App_Config{
@@ -29,6 +31,20 @@ Game :: struct {
 init :: proc(data: iris.App_Data) {
 	g := cast(^Game)data
 	append(&g.ctx_stack, new(Combat_Context))
+
+	theme = iris.User_Interface_Theme {
+		borders = true,
+		border_color = {1, 1, 1, 1},
+		contrast_values = {0 = 0.35, 1 = 0.75, 2 = 1, 3 = 1.25, 4 = 1.5},
+		base_color = {0.35, 0.35, 0.35, 1},
+		highlight_color = {0.7, 0.7, 0.8, 1},
+		text_color = 1,
+		text_size = 20,
+		font = iris.font_resource(
+			iris.Font_Loader{path = "fonts/Roboto-Regular.ttf", sizes = {20}},
+		).data.(^iris.Font),
+		title_style = .Center,
+	}
 
 	for ctx in g.ctx_stack {
 		init_game_context(ctx)
