@@ -166,6 +166,19 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) {
 		},
 	)
 
+	name_label := iris.new_widget_from(
+		c.ui,
+		iris.Label_Widget{
+			base = iris.Widget{
+				flags = iris.DEFAULT_LAYOUT_CHILD_FLAGS + {.Fit_Theme},
+				background = iris.Widget_Background{style = .Solid},
+			},
+			text = iris.Text{data = "Player", style = .Center},
+		},
+	)
+	iris.layout_add_widget(portrait_layout, name_label, 25)
+
+
 	hp_slider := iris.new_widget_from(
 		c.ui,
 		iris.Slider_Widget{
@@ -178,4 +191,128 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) {
 		},
 	)
 	iris.layout_add_widget(portrait_layout, hp_slider, 25)
+
+	mp_slider := iris.new_widget_from(
+		c.ui,
+		iris.Slider_Widget{
+			base = iris.Widget{
+				flags = iris.DEFAULT_LAYOUT_CHILD_FLAGS + {.Fit_Theme},
+				background = iris.Widget_Background{style = .Solid},
+			},
+			progress = 0.5,
+			progress_origin = .Left,
+		},
+	)
+	iris.layout_add_widget(portrait_layout, mp_slider, 25)
+}
+
+//////////////////////////
+//////////
+/*
+	Player Input
+*/
+//////////
+//////////////////////////
+
+Player_Controller :: struct {
+	action_panel:    ^iris.Layout_Widget,
+	unit_portrait:   ^iris.Layout_Widget,
+	layout_portrait: ^iris.Layout_Widget,
+}
+
+start_player_turn :: proc(pc: ^Player_Controller) {
+	pc.action_panel.flags += {.Active}
+}
+
+compute_player_action :: proc(c: ^Character_Info, pc: ^Player_Controller) -> Combat_Action {
+	return Nil_Action{}
+}
+
+end_player_turn :: proc(pc: ^Player_Controller) {
+	iris.widget_active(widget = pc.action_panel, active = false)
+}
+
+//////////////////////////
+//////////
+/*
+	Combat simulation
+*/
+//////////
+//////////////////////////
+
+Stat_Kind :: enum {
+	Health,
+	Speed,
+}
+
+Stat :: struct {
+	current: int,
+	min:     int,
+	max:     int,
+}
+
+increase_stat :: proc(s: ^Stat, by: int) {
+	s.current = max(s.current + by, s.max)
+}
+
+decrease_stat :: proc(s: ^Stat, by: int) {
+	s.current = min(s.current - by, 0)
+}
+
+// All the data about the current state of the combat
+Combat_Simulation :: struct {
+	characters: [dynamic]Character_Info,
+	current:    Turn_ID,
+}
+
+Turn_ID :: distinct uint
+
+Combat_Action :: union {
+	Nil_Action,
+	Attack_Action,
+}
+
+Nil_Action :: struct {}
+
+Attack_Action :: struct {
+	amount: int,
+	target: Turn_ID,
+}
+
+Team_Mask :: distinct bit_set[Team_Marker]
+
+Team_Marker :: enum {
+	Team_A,
+	Team_B,
+	Team_C,
+	Team_D,
+}
+
+Character_Info :: struct {
+	// Turns out we probably need a ref to the scene node for
+	// mouse picking and other stuff
+	node:       ^iris.Model_Node,
+	controller: ^Player_Controller,
+
+	// Actual data
+	kind:       Character_Kind,
+	team:       Team_Mask,
+	turn_id:    Turn_ID,
+	position:   iris.Vector3,
+	stats:      [len(Stat_Kind)]Stat,
+}
+
+Character_Kind :: enum {
+	Player,
+	Computer,
+}
+
+advance_simulation :: proc(sim: ^Combat_Simulation) {
+	character := &sim.characters[sim.current]
+	switch character.kind {
+	case .Player:
+		compute_player_turn()
+	case .Computer:
+		compute_ai_action()
+	}
 }
