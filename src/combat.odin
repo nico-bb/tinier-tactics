@@ -3,7 +3,7 @@ package main
 import "lib:iris"
 
 Combat_Context :: struct {
-	scene:              iris.Scene,
+	scene:              ^iris.Scene,
 	character_mesh:     ^iris.Mesh,
 	character_material: ^iris.Material,
 	player:             ^iris.Model_Node,
@@ -18,6 +18,8 @@ Combat_Context :: struct {
 }
 
 init_combat_context :: proc(c: ^Combat_Context) {
+	iris.add_light(.Directional, iris.Vector3{2, 3, 2}, {100, 100, 90, 1}, true)
+
 	shader, shader_exist := iris.shader_from_name("deferred_geometry")
 	assert(shader_exist)
 	spec_res := iris.shader_specialization_resource("deferred_character", shader)
@@ -33,20 +35,35 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		iris.Material_Loader{name = "character", shader = shader, specialization = shader_spec},
 	)
 	c.character_material = mat_res.data.(^iris.Material)
+	iris.set_material_map(
+		c.character_material,
+		.Diffuse0,
+		iris.texture_resource(
+			iris.Texture_Loader{
+				info = iris.File_Texture_Info{path = "textures/char_texture.png"},
+				filter = .Nearest,
+				wrap = .Repeat,
+				space = .sRGB,
+			},
+		).data.(^iris.Texture),
+	)
 
 	c.character_mesh = iris.cube_mesh(1, 1, 1).data.(^iris.Mesh)
 
-	iris.init_scene(&c.scene)
-	camera := iris.new_default_camera(&c.scene)
+	c.scene = iris.scene_resource("combat", {.Draw_Debug_Collisions}).data.(^iris.Scene)
+	camera := iris.new_default_camera(c.scene)
 
-	c.player = iris.model_node_from_mesh(&c.scene, c.character_mesh, c.character_material)
+	c.player = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
+	c.player.local_bounds = iris.bounding_box_from_min_max(
+		iris.Vector3{-0.5, -0.5, -0.5},
+		iris.Vector3{0.5, 0.5, 0.5},
+	)
+	// c.enemy = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
+	// iris.node_local_transform(c.enemy, iris.transform(t = {0, 0, -1}))
 
-	c.enemy = iris.model_node_from_mesh(&c.scene, c.character_mesh, c.character_material)
-	iris.node_local_transform(c.enemy, iris.transform(t = {0, 0, -1}))
-
-	iris.insert_node(&c.scene, camera)
-	iris.insert_node(&c.scene, c.player)
-	iris.insert_node(&c.scene, c.enemy)
+	iris.insert_node(c.scene, camera)
+	iris.insert_node(c.scene, c.player)
+	// iris.insert_node(c.scene, c.enemy)
 
 	anim_res := iris.animation_resource({name = "character_attack", loop = true})
 	animation := anim_res.data.(^iris.Animation)
@@ -62,7 +79,7 @@ init_combat_context :: proc(c: ^Combat_Context) {
 	channel.frame_durations[0] = 0.5
 	channel.frame_durations[1] = 0.5
 
-	channel.frame_outputs[0] = iris.Vector3{0, 0, 1}
+	channel.frame_outputs[0] = iris.Vector3{1, 0, 1}
 	channel.frame_outputs[1] = iris.Vector3{0, 0, 0}
 
 	animation.channels[0] = channel
@@ -75,10 +92,10 @@ init_combat_context :: proc(c: ^Combat_Context) {
 	iris.reset_animation(&c.player_animation)
 
 	{
-		canvas := iris.new_node_from(&c.scene, iris.Canvas_Node{width = 1600, height = 900})
-		iris.insert_node(&c.scene, canvas)
-		c.ui = iris.new_node_from(&c.scene, iris.User_Interface_Node{canvas = canvas})
-		iris.insert_node(&c.scene, c.ui)
+		canvas := iris.new_node_from(c.scene, iris.Canvas_Node{width = 1600, height = 900})
+		iris.insert_node(c.scene, canvas)
+		c.ui = iris.new_node_from(c.scene, iris.User_Interface_Node{canvas = canvas})
+		iris.insert_node(c.scene, c.ui)
 		iris.ui_node_theme(c.ui, theme)
 
 		init_action_controller(c)
@@ -221,7 +238,7 @@ Player_Controller :: struct {
 }
 
 start_player_turn :: proc(pc: ^Player_Controller) {
-	pc.action_panel.flags += {.Active}
+	iris.widget_active(widget = pc.action_panel, active = true)
 }
 
 compute_player_action :: proc(c: ^Character_Info, pc: ^Player_Controller) -> Combat_Action {
@@ -308,11 +325,11 @@ Character_Kind :: enum {
 }
 
 advance_simulation :: proc(sim: ^Combat_Simulation) {
-	character := &sim.characters[sim.current]
-	switch character.kind {
-	case .Player:
-		compute_player_turn()
-	case .Computer:
-		compute_ai_action()
-	}
+	// character := &sim.characters[sim.current]
+	// switch character.kind {
+	// case .Player:
+	// 	compute_player_turn()
+	// case .Computer:
+	// 	compute_ai_action()
+	// }
 }

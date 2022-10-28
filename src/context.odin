@@ -1,6 +1,6 @@
 package main
 
-import "lib:iris"
+// import "lib:iris"
 
 GAME_MARGIN :: 25
 
@@ -25,7 +25,6 @@ init_game_context :: proc(ctx: Game_Context) {
 destroy_game_context :: proc(ctx: Game_Context) {
 	switch c in ctx {
 	case ^Combat_Context:
-		iris.destroy_scene(&c.scene)
 		free(c)
 	}
 }
