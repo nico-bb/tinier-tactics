@@ -22,6 +22,25 @@
             "cwd": "${workspaceFolder}",
             "environment": [],
             "console": "externalTerminal"
+        },
+        {
+            "name": "(Windows) Odin-Debug-Launch",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "D:/Repository/Odin/odin.exe",
+            "args": [
+                "run",
+                "src",
+                "-out:bin/tinier-tactics.exe",
+                "-debug",
+                "-strict-style",
+                "-vet",
+                "-collection:lib=./lib"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "console": "externalTerminal"
         }
     ]
 }

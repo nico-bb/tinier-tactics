@@ -1,5 +1,6 @@
 package main
 
+// import "core:fmt"
 import "lib:iris"
 
 Combat_Context :: struct {
@@ -11,8 +12,14 @@ Combat_Context :: struct {
 	player_position:    iris.Vector3,
 	enemy:              ^iris.Model_Node,
 
+	// Logic
+	player_controller:  Player_Controller,
+	characters:         [dynamic]Character_Info,
+	current:            Turn_ID,
+
 	// UI
 	ui:                 ^iris.User_Interface_Node,
+	action_panel:       ^iris.Layout_Widget,
 	unit_portrait:      ^iris.Layout_Widget,
 	target_portrait:    ^iris.Layout_Widget,
 }
@@ -58,14 +65,19 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		iris.Vector3{-0.5, -0.5, -0.5},
 		iris.Vector3{0.5, 0.5, 0.5},
 	)
-	// c.enemy = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
-	// iris.node_local_transform(c.enemy, iris.transform(t = {0, 0, -1}))
+
+	c.enemy = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
+	c.enemy.local_bounds = iris.bounding_box_from_min_max(
+		iris.Vector3{-0.5, -0.5, -0.5},
+		iris.Vector3{0.5, 0.5, 0.5},
+	)
+	iris.node_local_transform(c.enemy, iris.transform(t = {0, 0, -1}))
 
 	iris.insert_node(c.scene, camera)
 	iris.insert_node(c.scene, c.player)
-	// iris.insert_node(c.scene, c.enemy)
+	iris.insert_node(c.scene, c.enemy)
 
-	anim_res := iris.animation_resource({name = "character_attack", loop = true})
+	anim_res := iris.animation_resource({name = "character_attack", loop = false})
 	animation := anim_res.data.(^iris.Animation)
 	animation.channels = make([]iris.Animation_Channel, 1)
 
@@ -98,14 +110,18 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		iris.insert_node(c.scene, c.ui)
 		iris.ui_node_theme(c.ui, theme)
 
-		init_action_controller(c)
-		init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
-		init_portrait(c, iris.Vector2{1600 - 250 - GAME_MARGIN, GAME_MARGIN})
+		c.action_panel = init_action_ui(c)
+		c.unit_portrait = init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
+		c.target_portrait = init_portrait(c, iris.Vector2{1600 - 250 - GAME_MARGIN, GAME_MARGIN})
 	}
+
+	// Controllers
+	init_simulation(c)
+	init_controllers(c)
 }
 
-init_action_controller :: proc(c: ^Combat_Context) {
-	action_layout := iris.new_widget_from(
+init_action_ui :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
+	action_panel := iris.new_widget_from(
 		c.ui,
 		iris.Layout_Widget{
 			base = iris.Widget{
@@ -137,7 +153,7 @@ init_action_controller :: proc(c: ^Combat_Context) {
 			data = c,
 		},
 	)
-	iris.layout_add_widget(action_layout, move_btn, 25)
+	iris.layout_add_widget(action_panel, move_btn, 25)
 
 	attack_btn := iris.new_widget_from(
 		c.ui,
@@ -150,7 +166,7 @@ init_action_controller :: proc(c: ^Combat_Context) {
 			data = c,
 		},
 	)
-	iris.layout_add_widget(action_layout, attack_btn, 25)
+	iris.layout_add_widget(action_panel, attack_btn, 25)
 
 	wait_btn := iris.new_widget_from(
 		c.ui,
@@ -163,10 +179,12 @@ init_action_controller :: proc(c: ^Combat_Context) {
 			data = c,
 		},
 	)
-	iris.layout_add_widget(action_layout, wait_btn, 25)
+	iris.layout_add_widget(action_panel, wait_btn, 25)
+
+	return action_panel
 }
 
-init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) {
+init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) -> ^iris.Layout_Widget {
 	portrait_layout := iris.new_widget_from(
 		c.ui,
 		iris.Layout_Widget{
@@ -221,6 +239,51 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) {
 		},
 	)
 	iris.layout_add_widget(portrait_layout, mp_slider, 25)
+
+	return portrait_layout
+}
+
+init_controllers :: proc(c: ^Combat_Context) {
+	// character_query :: proc(
+	// 	c: ^Combat_Context,
+	// ) -> (
+	// 	info: ^Character_Info,
+	// 	position: iris.Vector3,
+	// ) {
+	// 	ray := iris.camera_mouse_ray(c.scene.main_camera)
+	// 	for character, i in c.characters {
+	// 		result := iris.ray_bounding_box_intersection(ray, character.node.global_bounds)
+	// 		if result.hit {
+	// 			position = iris.translation_from_matrix(character.node.global_transform)
+	// 			info = &c.characters[i]
+	// 			return
+	// 		}
+	// 	}
+	// 	return
+	// }
+
+	// c.player_controller.character_query = character_query
+	c.player_controller.action_panel = c.action_panel
+	c.player_controller.unit_portrait = c.unit_portrait
+	c.player_controller.target_portrait = c.target_portrait
+}
+
+init_simulation :: proc(c: ^Combat_Context) {
+	append(
+		&c.characters,
+		Character_Info{
+			node = c.player,
+			kind = .Player,
+			team = {.Team_A},
+			stats = {Stat_Kind.Health = stat(10), Stat_Kind.Speed = stat(3)},
+		},
+		Character_Info{
+			node = c.enemy,
+			kind = .Computer,
+			team = {.Team_A},
+			stats = {Stat_Kind.Health = stat(10), Stat_Kind.Speed = stat(3)},
+		},
+	)
 }
 
 //////////////////////////
@@ -232,22 +295,73 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) {
 //////////////////////////
 
 Player_Controller :: struct {
-	action_panel:    ^iris.Layout_Widget,
-	unit_portrait:   ^iris.Layout_Widget,
-	layout_portrait: ^iris.Layout_Widget,
+	// Context query callbacks
+	// _c:               ^Combat_Context,
+	// character_query:  proc(c: ^Combat_Context) -> (^Character_Info, iris.Vector3),
+
+	// UI
+	action_panel:     ^iris.Layout_Widget,
+	unit_portrait:    ^iris.Layout_Widget,
+	target_portrait:  ^iris.Layout_Widget,
+
+	// Logic data
+	state:            enum {
+		Idle,
+		Select_Target,
+	},
+	character_info:   ^Character_Info,
+	target_info:      Maybe(^Character_Info),
+
+	// Spatial data
+	position:         iris.Vector3,
+	animation_offset: iris.Vector3,
+	target_position:  iris.Vector3,
+
+	// All the animations
+	idle_animation:   iris.Animation_Player,
+	attack_animation: iris.Animation_Player,
 }
 
-start_player_turn :: proc(pc: ^Player_Controller) {
+start_player_turn :: proc(pc: ^Player_Controller, current: ^Character_Info) {
 	iris.widget_active(widget = pc.action_panel, active = true)
+	iris.widget_active(widget = pc.unit_portrait, active = true)
+	pc.character_info = current
 }
 
-compute_player_action :: proc(c: ^Character_Info, pc: ^Player_Controller) -> Combat_Action {
+on_action_btn_pressed :: proc(data: rawptr, id: iris.Widget_ID) {
+	Action_Button_ID :: enum {
+		Attack,
+		Wait,
+	}
+
+	// pc := cast(^Player_Controller)data
+	action_id := Action_Button_ID(id)
+
+	switch action_id {
+	case .Attack:
+	case .Wait:
+	}
+}
+
+compute_player_action :: proc(pc: ^Player_Controller) -> Combat_Action {
+	portrait_on: bool
+	if pc.target_info != nil {
+		t := pc.target_info.?
+		portrait_on = t.kind == .Computer
+		// fmt.println(portrait_on)
+	}
+
+	// if 
+
+	iris.widget_active(widget = pc.target_portrait, active = portrait_on)
 	return Nil_Action{}
 }
 
 end_player_turn :: proc(pc: ^Player_Controller) {
+	iris.widget_active(widget = pc.unit_portrait, active = false)
 	iris.widget_active(widget = pc.action_panel, active = false)
 }
+
 
 //////////////////////////
 //////////
@@ -268,18 +382,16 @@ Stat :: struct {
 	max:     int,
 }
 
+stat :: proc(max: int) -> Stat {
+	return Stat{current = max, min = 0, max = max}
+}
+
 increase_stat :: proc(s: ^Stat, by: int) {
 	s.current = max(s.current + by, s.max)
 }
 
 decrease_stat :: proc(s: ^Stat, by: int) {
 	s.current = min(s.current - by, 0)
-}
-
-// All the data about the current state of the combat
-Combat_Simulation :: struct {
-	characters: [dynamic]Character_Info,
-	current:    Turn_ID,
 }
 
 Turn_ID :: distinct uint
@@ -308,15 +420,13 @@ Team_Marker :: enum {
 Character_Info :: struct {
 	// Turns out we probably need a ref to the scene node for
 	// mouse picking and other stuff
-	node:       ^iris.Model_Node,
-	controller: ^Player_Controller,
+	node:    ^iris.Model_Node,
 
 	// Actual data
-	kind:       Character_Kind,
-	team:       Team_Mask,
-	turn_id:    Turn_ID,
-	position:   iris.Vector3,
-	stats:      [len(Stat_Kind)]Stat,
+	kind:    Character_Kind,
+	team:    Team_Mask,
+	turn_id: Turn_ID,
+	stats:   [len(Stat_Kind)]Stat,
 }
 
 Character_Kind :: enum {
@@ -324,12 +434,40 @@ Character_Kind :: enum {
 	Computer,
 }
 
-advance_simulation :: proc(sim: ^Combat_Simulation) {
-	// character := &sim.characters[sim.current]
-	// switch character.kind {
-	// case .Player:
-	// 	compute_player_turn()
-	// case .Computer:
-	// 	compute_ai_action()
-	// }
+advance_simulation :: proc(ctx: ^Combat_Context) {
+	// Player specific procedures
+	{
+		// Reset the states
+		ctx.player_controller.target_info = nil
+
+		target_position: iris.Vector3
+		target_info: ^Character_Info
+		ray := iris.camera_mouse_ray(ctx.scene.main_camera)
+		for character, i in ctx.characters {
+			result := iris.ray_bounding_box_intersection(ray, character.node.global_bounds)
+			if result.hit {
+				target_position = iris.translation_from_matrix(character.node.global_transform)
+				target_info = &ctx.characters[i]
+				break
+			}
+		}
+
+		ctx.player_controller.target_position = target_position
+		ctx.player_controller.target_info = target_info
+	}
+
+	character := &ctx.characters[ctx.current]
+	action: Combat_Action
+
+	switch character.kind {
+	case .Player:
+		action = compute_player_action(&ctx.player_controller)
+	case .Computer:
+	// compute_ai_action()
+	}
+
+	switch a in action {
+	case Nil_Action:
+	case Attack_Action:
+	}
 }

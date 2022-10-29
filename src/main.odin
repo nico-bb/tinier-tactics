@@ -1,6 +1,5 @@
 package main
 
-import "core:fmt"
 import "lib:iris"
 
 theme: iris.User_Interface_Theme
@@ -48,7 +47,10 @@ init :: proc(data: iris.App_Data) {
 	}
 
 	for ctx in g.ctx_stack {
-		init_game_context(ctx)
+		switch c in ctx {
+		case ^Combat_Context:
+			init_combat_context(c)
+		}
 	}
 }
 
@@ -60,14 +62,7 @@ update :: proc(data: iris.App_Data) {
 	switch c in current {
 	case ^Combat_Context:
 		defer iris.update_scene(c.scene, dt)
-
-		// iris.advance_animation(&c.player_animation, dt)
-		// iris.node_local_transform(c.player, iris.transform(t = c.player_position))
-		ray := iris.camera_mouse_ray(c.scene.main_camera)
-		// fmt.println(ray)
-		result := iris.ray_bounding_box_intersection(ray, c.player.global_bounds)
-		fmt.println(result)
-	// fmt.println(c.player.local_bounds)
+		advance_simulation(c)
 	}
 }
 
@@ -87,6 +82,21 @@ render :: proc(data: iris.App_Data) {
 close :: proc(data: iris.App_Data) {
 	g := cast(^Game)data
 	for ctx in g.ctx_stack {
-		destroy_game_context(ctx)
+		switch c in ctx {
+		case ^Combat_Context:
+			free(c)
+		}
 	}
+}
+
+GAME_MARGIN :: 25
+
+Game_Stack :: [dynamic]Game_Context
+
+last_item_game_stack :: proc(g: Game_Stack) -> Game_Context {
+	return g[len(g) - 1]
+}
+
+Game_Context :: union {
+	^Combat_Context,
 }
