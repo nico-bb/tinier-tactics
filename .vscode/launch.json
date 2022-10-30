@@ -8,7 +8,7 @@
             "type": "lldb",
             "request": "launch",
             "name": "(Linux) Launch",
-            "program": "${workspaceFolder}/bin/small-world",
+            "program": "${workspaceFolder}/bin/tinier-tactics",
             "args": [],
             "cwd": "${workspaceFolder}"
         },
