@@ -1,6 +1,7 @@
 package main
 
 // import "core:fmt"
+import "core:sort"
 import "core:math/linalg"
 import "lib:iris"
 
@@ -306,6 +307,29 @@ init_simulation :: proc(c: ^Combat_Context) {
 	)
 
 	// Sort by speed
+	it := sort.Interface {
+		len = proc(it: sort.Interface) -> int {
+			ctx := cast(^Combat_Context)it.collection
+			return len(ctx.characters)
+		},
+		less = proc(it: sort.Interface, i, j: int) -> bool {
+			ctx := cast(^Combat_Context)it.collection
+			i_speed := ctx.characters[i].stats[Stat_Kind.Speed].current
+			j_speed := ctx.characters[j].stats[Stat_Kind.Speed].current
+			return i_speed > j_speed
+		},
+		swap = proc(it: sort.Interface, i, j: int) {
+			ctx := cast(^Combat_Context)it.collection
+			ctx.characters[i], ctx.characters[j] = ctx.characters[j], ctx.characters[i]
+		},
+		collection = c,
+	}
+	sort.sort(it)
+
+
+	for info, i in &c.characters {
+		info.turn_id = Turn_ID(i)
+	}
 
 	first := &c.characters[0]
 	switch first.kind {
@@ -325,34 +349,34 @@ init_simulation :: proc(c: ^Combat_Context) {
 
 Player_Controller :: struct {
 	// Context query callbacks
-	// _c:               ^Combat_Context,
-	// character_query:  proc(c: ^Combat_Context) -> (^Character_Info, iris.Vector3),
 
 	// UI
-	action_panel:      ^iris.Layout_Widget,
-	unit_portrait:     ^iris.Layout_Widget,
-	target_portrait:   ^iris.Layout_Widget,
-	info_panel:        ^iris.Layout_Widget,
-	refresh_portraits: bool,
+	action_panel:        ^iris.Layout_Widget,
+	unit_portrait:       ^iris.Layout_Widget,
+	target_portrait:     ^iris.Layout_Widget,
+	info_panel:          ^iris.Layout_Widget,
+	refresh_portraits:   bool,
 
 	// Logic data
-	state:             Player_Controller_State,
-	character_info:    ^Character_Info,
-	target_info:       Maybe(^Character_Info),
+	state:               Player_Controller_State,
+	character_info:      ^Character_Info,
+	target_info:         Maybe(^Character_Info),
+	selected_target_ino: ^Character_Info,
 
 	// Spatial data
-	position:          iris.Vector3,
-	animation_offset:  iris.Vector3,
-	target_position:   iris.Vector3,
+	position:            iris.Vector3,
+	animation_offset:    iris.Vector3,
+	target_position:     iris.Vector3,
 
 	// All the animations
-	idle_animation:    iris.Animation_Player,
-	attack_animation:  iris.Animation_Player,
+	idle_animation:      iris.Animation_Player,
+	attack_animation:    iris.Animation_Player,
 }
 
 Player_Controller_State :: enum {
 	Idle,
 	Select_Target,
+	Wait_For_Animation,
 }
 
 start_player_turn :: proc(pc: ^Player_Controller, current: ^Character_Info) {
@@ -378,12 +402,18 @@ compute_player_action :: proc(pc: ^Player_Controller) -> Combat_Action {
 		HP_SLIDER :: 1
 
 		unit_progress := stat_current_value_percent(&pc.character_info.stats[Stat_Kind.Health])
-		unit_hp_slider := cast(^iris.Slider_Widget)&pc.unit_portrait.children[HP_SLIDER]
+		u := pc.unit_portrait.children[HP_SLIDER]
+		unit_hp_slider := u.derived.(^iris.Slider_Widget)
 		iris.slider_progress_value(unit_hp_slider, unit_progress)
 
-		target_progress := stat_current_value_percent(&(pc.target_info.?).stats[Stat_Kind.Health])
-		target_hp_slider := cast(^iris.Slider_Widget)&pc.target_portrait.children[HP_SLIDER]
-		iris.slider_progress_value(target_hp_slider, target_progress)
+		if pc.target_info != nil {
+			target_progress := stat_current_value_percent(
+				&(pc.target_info.?).stats[Stat_Kind.Health],
+			)
+			t := pc.target_portrait.children[HP_SLIDER]
+			target_hp_slider := t.derived.(^iris.Slider_Widget)
+			iris.slider_progress_value(target_hp_slider, target_progress)
+		}
 	}
 
 	portrait_on: bool
@@ -408,9 +438,22 @@ compute_player_action :: proc(pc: ^Player_Controller) -> Combat_Action {
 				dir := linalg.vector_normalize(pos - pc.target_position)
 				iris.reset_animation(&pc.attack_animation)
 				pc.attack_animation.playing = true
+				pc.state = .Wait_For_Animation
+				pc.selected_target_ino = t
 			}
 		case .Just_Pressed in m_right || .Just_Pressed in esc:
 			controller_state_transition(pc, .Idle)
+		}
+
+	case .Wait_For_Animation:
+		if !pc.attack_animation.playing {
+			pc.state = .Idle
+
+			action := Attack_Action {
+				target = pc.selected_target_ino.turn_id,
+				amount = 1,
+			}
+			return action
 		}
 	}
 
@@ -423,6 +466,8 @@ controller_state_transition :: proc(pc: ^Player_Controller, to: Player_Controlle
 		iris.widget_active(widget = pc.info_panel, active = false)
 	case .Select_Target:
 		iris.widget_active(widget = pc.info_panel, active = true)
+	case .Wait_For_Animation:
+		iris.widget_active(widget = pc.info_panel, active = false)
 	}
 
 	pc.state = to
@@ -528,7 +573,10 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 		}
 
 		ctx.player_controller.target_position = target_position
-		ctx.player_controller.target_info = target_info
+		if target_info != nil {
+			ctx.player_controller.target_info = target_info
+			ctx.player_controller.refresh_portraits = true
+		}
 
 		if ctx.player_controller.attack_animation.playing {
 			iris.advance_animation(

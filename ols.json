@@ -2,7 +2,7 @@
     "collections": [
         {
             "name": "core",
-            "path": "D:\\Repository\\Odin\\core"
+            "path": "/home/babe/programs/odin/core"
         },
         {
             "name": "lib",
