@@ -67,6 +67,7 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		iris.Vector3{-0.5, -0.5, -0.5},
 		iris.Vector3{0.5, 0.5, 0.5},
 	)
+	iris.node_local_transform(c.player, iris.transform(t = {0, 0, 1}))
 
 	c.enemy = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
 	c.enemy.local_bounds = iris.bounding_box_from_min_max(
@@ -258,6 +259,7 @@ init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
 	pc.action_panel = init_action_ui(c)
 	pc.unit_portrait = init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
 	pc.target_portrait = init_portrait(c, iris.Vector2{1600 - 250 - GAME_MARGIN, GAME_MARGIN})
+	pc.info_panel = init_info_panel(c)
 	c.player_controller.refresh_portraits = true
 
 	anim_res := iris.animation_resource({name = "character_attack", loop = false})
@@ -364,7 +366,6 @@ Player_Controller :: struct {
 	selected_target_ino: ^Character_Info,
 
 	// Spatial data
-	position:            iris.Vector3,
 	animation_offset:    iris.Vector3,
 	target_position:     iris.Vector3,
 
@@ -397,7 +398,7 @@ on_action_btn_pressed :: proc(data: rawptr, id: iris.Widget_ID) {
 	}
 }
 
-compute_player_action :: proc(pc: ^Player_Controller) -> Combat_Action {
+compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action, done: bool) {
 	if pc.refresh_portraits {
 		HP_SLIDER :: 1
 
@@ -453,11 +454,11 @@ compute_player_action :: proc(pc: ^Player_Controller) -> Combat_Action {
 				target = pc.selected_target_ino.turn_id,
 				amount = 1,
 			}
-			return action
+			return action, true
 		}
 	}
 
-	return Nil_Action{}
+	return Nil_Action{}, false
 }
 
 controller_state_transition :: proc(pc: ^Player_Controller, to: Player_Controller_State) {
@@ -503,11 +504,11 @@ stat :: proc(max: int) -> Stat {
 }
 
 increase_stat :: proc(s: ^Stat, by: int) {
-	s.current = max(s.current + by, s.max)
+	s.current = min(s.current + by, s.max)
 }
 
 decrease_stat :: proc(s: ^Stat, by: int) {
-	s.current = min(s.current - by, 0)
+	s.current = max(s.current - by, 0)
 }
 
 stat_current_value_percent :: proc(s: ^Stat) -> f32 {
@@ -555,6 +556,22 @@ Character_Kind :: enum {
 }
 
 advance_simulation :: proc(ctx: ^Combat_Context) {
+	character_take_damage :: proc(ctx: ^Combat_Context, id: Turn_ID, amount: int) {
+		decrease_stat(&ctx.characters[id].stats[Stat_Kind.Health], amount)
+	}
+
+	compute_ai_action :: proc(
+		ctx: ^Combat_Context,
+		info: ^Character_Info,
+	) -> (
+		action: Combat_Action,
+		done: bool,
+	) {
+		action = Nil_Action{}
+		done = true
+		return
+	}
+
 	// Player specific procedures
 	{
 		// Reset the states
@@ -594,16 +611,26 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 
 	character := &ctx.characters[ctx.current]
 	action: Combat_Action
+	turn_over: bool
 
 	switch character.kind {
 	case .Player:
-		action = compute_player_action(&ctx.player_controller)
+		action, turn_over = compute_player_action(&ctx.player_controller)
 	case .Computer:
-	// compute_ai_action()
+		action, turn_over = compute_ai_action(ctx, character)
 	}
 
 	switch a in action {
 	case Nil_Action:
 	case Attack_Action:
+		character_take_damage(ctx, a.target, a.amount)
+	}
+
+	if turn_over {
+		ctx.current += 1
+		if int(ctx.current) >= len(ctx.characters) {
+			ctx.current = 0
+			// Resort the turn order
+		}
 	}
 }
