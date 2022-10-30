@@ -18,10 +18,6 @@ Combat_Context :: struct {
 
 	// UI
 	ui:                 ^iris.User_Interface_Node,
-	action_panel:       ^iris.Layout_Widget,
-	unit_portrait:      ^iris.Layout_Widget,
-	target_portrait:    ^iris.Layout_Widget,
-	info_panel:         ^iris.Layout_Widget,
 }
 
 Combat_Button_ID :: enum {
@@ -88,14 +84,10 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		c.ui = iris.new_node_from(c.scene, iris.User_Interface_Node{canvas = canvas})
 		iris.insert_node(c.scene, c.ui)
 		iris.ui_node_theme(c.ui, theme)
-
-		c.action_panel = init_action_ui(c)
-		c.unit_portrait = init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
-		c.target_portrait = init_portrait(c, iris.Vector2{1600 - 250 - GAME_MARGIN, GAME_MARGIN})
 	}
 
 	// Controllers
-	init_controllers(c)
+	init_controllers(c, &c.player_controller)
 	init_simulation(c)
 }
 
@@ -162,7 +154,11 @@ init_action_ui :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
 	iris.layout_add_widget(action_panel, wait_btn, 25)
 
 
-	c.info_panel = iris.new_widget_from(
+	return action_panel
+}
+
+init_info_panel :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
+	info_panel := iris.new_widget_from(
 		c.ui,
 		iris.Layout_Widget{
 			base = iris.Widget{
@@ -193,8 +189,9 @@ init_action_ui :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
 			text = iris.Text{data = "Please select a target", style = .Center},
 		},
 	)
-	iris.layout_add_widget(c.info_panel, info_label, 32)
-	return action_panel
+	iris.layout_add_widget(info_panel, info_label, 32)
+
+	return info_panel
 }
 
 init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) -> ^iris.Layout_Widget {
@@ -256,11 +253,11 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) -> ^iris.Layou
 	return portrait_layout
 }
 
-init_controllers :: proc(c: ^Combat_Context) {
-	c.player_controller.action_panel = c.action_panel
-	c.player_controller.unit_portrait = c.unit_portrait
-	c.player_controller.target_portrait = c.target_portrait
-	c.player_controller.info_panel = c.info_panel
+init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
+	pc.action_panel = init_action_ui(c)
+	pc.unit_portrait = init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
+	pc.target_portrait = init_portrait(c, iris.Vector2{1600 - 250 - GAME_MARGIN, GAME_MARGIN})
+	c.player_controller.refresh_portraits = true
 
 	anim_res := iris.animation_resource({name = "character_attack", loop = false})
 	animation := anim_res.data.(^iris.Animation)
@@ -281,13 +278,14 @@ init_controllers :: proc(c: ^Combat_Context) {
 
 	animation.channels[0] = channel
 
-	c.player_controller.attack_animation = iris.make_animation_player(animation)
-	c.player_controller.attack_animation.targets[0] = &c.player_controller.animation_offset
-	c.player_controller.attack_animation.targets_start_value[0] =
-		iris.compute_animation_start_value(animation.channels[0])
-	iris.reset_animation(&c.player_controller.attack_animation)
+	pc.attack_animation = iris.make_animation_player(animation)
+	pc.attack_animation.targets[0] = &pc.animation_offset
+	pc.attack_animation.targets_start_value[0] = iris.compute_animation_start_value(
+		animation.channels[0],
+	)
+	iris.reset_animation(&pc.attack_animation)
 
-	c.player_controller.position = iris.Vector3{0, 0, 0}
+	pc.position = iris.Vector3{0, 0, 0}
 }
 
 init_simulation :: proc(c: ^Combat_Context) {
@@ -331,24 +329,25 @@ Player_Controller :: struct {
 	// character_query:  proc(c: ^Combat_Context) -> (^Character_Info, iris.Vector3),
 
 	// UI
-	action_panel:     ^iris.Layout_Widget,
-	unit_portrait:    ^iris.Layout_Widget,
-	target_portrait:  ^iris.Layout_Widget,
-	info_panel:       ^iris.Layout_Widget,
+	action_panel:      ^iris.Layout_Widget,
+	unit_portrait:     ^iris.Layout_Widget,
+	target_portrait:   ^iris.Layout_Widget,
+	info_panel:        ^iris.Layout_Widget,
+	refresh_portraits: bool,
 
 	// Logic data
-	state:            Player_Controller_State,
-	character_info:   ^Character_Info,
-	target_info:      Maybe(^Character_Info),
+	state:             Player_Controller_State,
+	character_info:    ^Character_Info,
+	target_info:       Maybe(^Character_Info),
 
 	// Spatial data
-	position:         iris.Vector3,
-	animation_offset: iris.Vector3,
-	target_position:  iris.Vector3,
+	position:          iris.Vector3,
+	animation_offset:  iris.Vector3,
+	target_position:   iris.Vector3,
 
 	// All the animations
-	idle_animation:   iris.Animation_Player,
-	attack_animation: iris.Animation_Player,
+	idle_animation:    iris.Animation_Player,
+	attack_animation:  iris.Animation_Player,
 }
 
 Player_Controller_State :: enum {
@@ -375,6 +374,18 @@ on_action_btn_pressed :: proc(data: rawptr, id: iris.Widget_ID) {
 }
 
 compute_player_action :: proc(pc: ^Player_Controller) -> Combat_Action {
+	if pc.refresh_portraits {
+		HP_SLIDER :: 1
+
+		unit_progress := stat_current_value_percent(&pc.character_info.stats[Stat_Kind.Health])
+		unit_hp_slider := cast(^iris.Slider_Widget)&pc.unit_portrait.children[HP_SLIDER]
+		iris.slider_progress_value(unit_hp_slider, unit_progress)
+
+		target_progress := stat_current_value_percent(&(pc.target_info.?).stats[Stat_Kind.Health])
+		target_hp_slider := cast(^iris.Slider_Widget)&pc.target_portrait.children[HP_SLIDER]
+		iris.slider_progress_value(target_hp_slider, target_progress)
+	}
+
 	portrait_on: bool
 	if pc.target_info != nil {
 		t := pc.target_info.?
@@ -452,6 +463,10 @@ increase_stat :: proc(s: ^Stat, by: int) {
 
 decrease_stat :: proc(s: ^Stat, by: int) {
 	s.current = min(s.current - by, 0)
+}
+
+stat_current_value_percent :: proc(s: ^Stat) -> f32 {
+	return f32(s.current) / f32(s.max)
 }
 
 Turn_ID :: distinct uint
