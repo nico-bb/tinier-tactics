@@ -1,6 +1,6 @@
 package main
 
-// import "core:fmt"
+import "core:fmt"
 import "core:sort"
 import "core:math/linalg"
 import "lib:iris"
@@ -17,6 +17,10 @@ Combat_Context :: struct {
 	characters:         [dynamic]Character_Info,
 	current:            Turn_ID,
 
+	// Spatial
+	grid_model:         ^iris.Model_Node,
+	grid:               []Tile_Info,
+
 	// UI
 	ui:                 ^iris.User_Interface_Node,
 }
@@ -26,8 +30,11 @@ Combat_Button_ID :: enum {
 	Wait,
 }
 
+GRID_WIDTH :: 5
+GRID_HEIGHT :: 5
+
 init_combat_context :: proc(c: ^Combat_Context) {
-	iris.add_light(.Directional, iris.Vector3{2, 3, 2}, {100, 100, 90, 1}, true)
+	iris.add_light(.Directional, iris.Vector3{2, 3, 2}, {100, 100, 90, 1}, false)
 
 	shader, shader_exist := iris.shader_from_name("deferred_geometry")
 	assert(shader_exist)
@@ -87,6 +94,8 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		iris.insert_node(c.scene, c.ui)
 		iris.ui_node_theme(c.ui, theme)
 	}
+
+	init_grid(c)
 
 	// Controllers
 	init_controllers(c, &c.player_controller)
@@ -255,6 +264,48 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) -> ^iris.Layou
 	return portrait_layout
 }
 
+init_grid :: proc(c: ^Combat_Context) {
+	tile_mesh := iris.plane_mesh(1, 1, 1, 1, 1).data.(^iris.Mesh)
+	tile_material := iris.material_resource(
+		iris.Material_Loader{
+			name = "tile",
+			shader = c.character_material.shader,
+			specialization = c.character_material.specialization,
+		},
+	).data.(^iris.Material)
+	iris.set_material_map(
+		tile_material,
+		.Diffuse0,
+		iris.texture_resource(
+			iris.Texture_Loader{
+				info = iris.File_Texture_Info{path = "textures/grid_texture.png"},
+				filter = .Nearest,
+				wrap = .Repeat,
+				space = .sRGB,
+			},
+		).data.(^iris.Texture),
+	)
+
+	c.grid = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
+	for y in 0 ..< GRID_HEIGHT {
+		for x in 0 ..< GRID_WIDTH {
+			tile_node := iris.model_node_from_mesh(c.scene, tile_mesh, tile_material)
+			iris.node_local_transform(tile_node, iris.transform(t = coord_to_world({x, y})))
+			tile_node.local_bounds = iris.bounding_box_from_min_max(
+				p_min = {-0.5, -0.05, -0.5},
+				p_max = {0.5, 0.05, 0.5},
+			)
+			iris.insert_node(c.scene, tile_node)
+
+			c.grid[y * GRID_WIDTH + x] = Tile_Info {
+				index   = y * GRID_WIDTH + x,
+				node    = tile_node,
+				content = nil,
+			}
+		}
+	}
+}
+
 init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
 	pc.action_panel = init_action_ui(c)
 	pc.unit_portrait = init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
@@ -276,8 +327,8 @@ init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
 	channel.frame_durations[0] = 0.5
 	channel.frame_durations[1] = 0.5
 
-	channel.frame_outputs[0] = iris.Vector3{0, 0, 1}
-	channel.frame_outputs[1] = iris.Vector3{0, 0, 0}
+	channel.frame_outputs[0] = f32(1)
+	channel.frame_outputs[1] = f32(0)
 
 	animation.channels[0] = channel
 
@@ -287,8 +338,6 @@ init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
 		animation.channels[0],
 	)
 	iris.reset_animation(&pc.attack_animation)
-
-	pc.position = iris.Vector3{0, 0, 0}
 }
 
 init_simulation :: proc(c: ^Combat_Context) {
@@ -307,6 +356,9 @@ init_simulation :: proc(c: ^Combat_Context) {
 			stats = {Stat_Kind.Health = stat(10), Stat_Kind.Speed = stat(3)},
 		},
 	)
+
+	move_character_to_tile(c, &c.characters[0], Tile_Coordinate{0, 0})
+	move_character_to_tile(c, &c.characters[1], Tile_Coordinate{3, 4})
 
 	// Sort by speed
 	it := sort.Interface {
@@ -353,25 +405,27 @@ Player_Controller :: struct {
 	// Context query callbacks
 
 	// UI
-	action_panel:        ^iris.Layout_Widget,
-	unit_portrait:       ^iris.Layout_Widget,
-	target_portrait:     ^iris.Layout_Widget,
-	info_panel:          ^iris.Layout_Widget,
-	refresh_portraits:   bool,
+	action_panel:         ^iris.Layout_Widget,
+	unit_portrait:        ^iris.Layout_Widget,
+	target_portrait:      ^iris.Layout_Widget,
+	info_panel:           ^iris.Layout_Widget,
+	refresh_portraits:    bool,
 
 	// Logic data
-	state:               Player_Controller_State,
-	character_info:      ^Character_Info,
-	target_info:         Maybe(^Character_Info),
-	selected_target_ino: ^Character_Info,
+	state:                Player_Controller_State,
+	character_info:       ^Character_Info,
+	target_info:          Maybe(^Character_Info),
+	selected_target_info: ^Character_Info,
 
 	// Spatial data
-	animation_offset:    iris.Vector3,
-	target_position:     iris.Vector3,
+	position:             iris.Vector3,
+	direction:            iris.Vector3,
+	animation_offset:     f32,
+	target_position:      iris.Vector3,
 
 	// All the animations
-	idle_animation:      iris.Animation_Player,
-	attack_animation:    iris.Animation_Player,
+	idle_animation:       iris.Animation_Player,
+	attack_animation:     iris.Animation_Player,
 }
 
 Player_Controller_State :: enum {
@@ -381,9 +435,9 @@ Player_Controller_State :: enum {
 }
 
 start_player_turn :: proc(pc: ^Player_Controller, current: ^Character_Info) {
-	iris.widget_active(widget = pc.action_panel, active = true)
-	iris.widget_active(widget = pc.unit_portrait, active = true)
+	controller_state_transition(pc, .Idle)
 	pc.character_info = current
+	pc.position = iris.translation_from_matrix(current.node.local_transform)
 }
 
 on_action_btn_pressed :: proc(data: rawptr, id: iris.Widget_ID) {
@@ -436,11 +490,11 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 			if pc.target_info != nil {
 				t := pc.target_info.?
 				pos := iris.translation_from_matrix(pc.character_info.node.global_transform)
-				dir := linalg.vector_normalize(pos - pc.target_position)
+				pc.direction = linalg.vector_normalize(pc.target_position - pos)
 				iris.reset_animation(&pc.attack_animation)
 				pc.attack_animation.playing = true
 				pc.state = .Wait_For_Animation
-				pc.selected_target_ino = t
+				pc.selected_target_info = t
 			}
 		case .Just_Pressed in m_right || .Just_Pressed in esc:
 			controller_state_transition(pc, .Idle)
@@ -451,7 +505,7 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 			pc.state = .Idle
 
 			action := Attack_Action {
-				target = pc.selected_target_ino.turn_id,
+				target = pc.selected_target_info.turn_id,
 				amount = 1,
 			}
 			return action, true
@@ -464,6 +518,8 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 controller_state_transition :: proc(pc: ^Player_Controller, to: Player_Controller_State) {
 	switch to {
 	case .Idle:
+		iris.widget_active(widget = pc.action_panel, active = true)
+		iris.widget_active(widget = pc.unit_portrait, active = true)
 		iris.widget_active(widget = pc.info_panel, active = false)
 	case .Select_Target:
 		iris.widget_active(widget = pc.info_panel, active = true)
@@ -477,8 +533,108 @@ controller_state_transition :: proc(pc: ^Player_Controller, to: Player_Controlle
 end_player_turn :: proc(pc: ^Player_Controller) {
 	iris.widget_active(widget = pc.unit_portrait, active = false)
 	iris.widget_active(widget = pc.action_panel, active = false)
+	iris.widget_active(widget = pc.info_panel, active = false)
 }
 
+//////////////////////////
+//////////
+/*
+	Grid
+*/
+//////////
+//////////////////////////
+
+Tile_Info :: struct {
+	index:   int,
+	node:    ^iris.Model_Node,
+	content: union {
+		Empty_Tile,
+		^Character_Info,
+	},
+}
+
+Tile_Coordinate :: [2]int
+
+Move_Result :: enum {
+	Ok,
+	Blocked,
+}
+
+Empty_Tile :: struct {}
+
+coord_to_index :: proc(coord: Tile_Coordinate) -> int {
+	return coord.y * GRID_WIDTH + coord.x
+}
+
+coord_to_world :: proc(coord: Tile_Coordinate) -> (result: iris.Vector3) {
+	GRID_ORIGIN_X :: f32(GRID_WIDTH) / 2
+	GRID_ORIGIN_Y :: f32(GRID_HEIGHT) / 2
+	result = {f32(coord.x) - GRID_ORIGIN_X, 0.0, f32(coord.y) - GRID_ORIGIN_Y}
+	fmt.printf("START: [%f, %f], TILE: %v, TO: %v\n", GRID_ORIGIN_X, GRID_ORIGIN_X, coord, result)
+	return
+}
+
+index_to_coord :: proc(index: int) -> Tile_Coordinate {
+	return {index % GRID_WIDTH, index / GRID_WIDTH}
+}
+
+index_to_world :: proc(index: int) -> iris.Vector3 {
+	GRID_ORIGIN_X :: f32(GRID_WIDTH) / 2
+	GRID_ORIGIN_Y :: f32(GRID_HEIGHT) / 2
+	x := index % GRID_WIDTH
+	y := index / GRID_WIDTH
+
+	return {f32(x) - GRID_ORIGIN_X, 0.5, f32(y) - GRID_ORIGIN_Y}
+}
+
+tile_move_query :: proc(c: ^Combat_Context, index: int) -> (result: Move_Result) {
+	tile := c.grid[index]
+	switch content in tile.content {
+	case Empty_Tile:
+		result = .Ok
+	case ^Character_Info:
+		result = .Blocked
+	case:
+		result = .Ok
+	}
+	return
+}
+
+move_character_to_tile :: proc {
+	move_character_to_tile_index,
+	move_character_to_tile_coord,
+}
+
+move_character_to_tile_index :: proc(
+	c: ^Combat_Context,
+	info: ^Character_Info,
+	index: int,
+) -> (
+	result: Move_Result,
+) {
+	if tile_move_query(c, index) == .Ok {
+		info.coord = coord_to_index(index)
+		c.grid[index].content = info
+		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
+	}
+	return
+}
+
+move_character_to_tile_coord :: proc(
+	c: ^Combat_Context,
+	info: ^Character_Info,
+	coord: Tile_Coordinate,
+) -> (
+	result: Move_Result,
+) {
+	index := coord_to_index(coord)
+	if tile_move_query(c, index) == .Ok {
+		info.coord = coord
+		c.grid[index].content = info
+		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
+	}
+	return
+}
 
 //////////////////////////
 //////////
@@ -548,6 +704,9 @@ Character_Info :: struct {
 	team:    Team_Mask,
 	turn_id: Turn_ID,
 	stats:   [len(Stat_Kind)]Stat,
+
+	// Spatial data
+	coord:   Tile_Coordinate,
 }
 
 Character_Kind :: enum {
@@ -601,7 +760,9 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 				f32(iris.elapsed_time()),
 			)
 
-			pos := ctx.player_controller.position + ctx.player_controller.animation_offset
+			displacement :=
+				ctx.player_controller.direction * ctx.player_controller.animation_offset
+			pos := ctx.player_controller.position + displacement
 			iris.node_local_transform(
 				ctx.player_controller.character_info.node,
 				iris.transform(t = pos),
@@ -627,10 +788,23 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 	}
 
 	if turn_over {
+		switch character.kind {
+		case .Player:
+			end_player_turn(&ctx.player_controller)
+		case .Computer:
+		}
+
 		ctx.current += 1
 		if int(ctx.current) >= len(ctx.characters) {
 			ctx.current = 0
 			// Resort the turn order
+		}
+
+		next := &ctx.characters[ctx.current]
+		switch next.kind {
+		case .Player:
+			start_player_turn(&ctx.player_controller, next)
+		case .Computer:
 		}
 	}
 }
