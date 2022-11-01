@@ -82,5 +82,13 @@ vec3 sampleTerrainAlbedo() {
     // return vec3(frag.color.g, 0.0, 0.0);
 }
 
+layout (index = 2) subroutine(subSampleAlbedo)
+vec3 sampleHighlightTileAlbedo() {
+    const vec2 center = vec2(0.5, 0.5);
+    const vec2 toCenter = center - frag.texCoord;
+    const float highlightValue = smoothstep(0.45, 0.6, length(toCenter));
+    return vec3(highlightValue, highlightValue, highlightValue);
+}
+
 ////////////////////////////////////
 ////////////////////////////////////

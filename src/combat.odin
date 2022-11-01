@@ -2,27 +2,32 @@ package main
 
 import "core:fmt"
 import "core:sort"
+import "core:slice"
 import "core:math/linalg"
 import "lib:iris"
 
 Combat_Context :: struct {
-	scene:              ^iris.Scene,
-	character_mesh:     ^iris.Mesh,
-	character_material: ^iris.Material,
-	player:             ^iris.Model_Node,
-	enemy:              ^iris.Model_Node,
+	scene:                   ^iris.Scene,
+	character_mesh:          ^iris.Mesh,
+	character_material:      ^iris.Material,
+	player:                  ^iris.Model_Node,
+	enemy:                   ^iris.Model_Node,
+	default_spec:            ^iris.Shader_Specialization,
+	highlight_spec:          ^iris.Shader_Specialization,
+	tile_material_default:   ^iris.Material,
+	tile_material_highlight: ^iris.Material,
 
 	// Logic
-	player_controller:  Player_Controller,
-	characters:         [dynamic]Character_Info,
-	current:            Turn_ID,
+	player_controller:       Player_Controller,
+	characters:              [dynamic]Character_Info,
+	current:                 Turn_ID,
 
 	// Spatial
-	grid_model:         ^iris.Model_Node,
-	grid:               []Tile_Info,
+	grid_model:              ^iris.Model_Node,
+	grid:                    []Tile_Info,
 
 	// UI
-	ui:                 ^iris.User_Interface_Node,
+	ui:                      ^iris.User_Interface_Node,
 }
 
 Combat_Button_ID :: enum {
@@ -38,17 +43,29 @@ init_combat_context :: proc(c: ^Combat_Context) {
 
 	shader, shader_exist := iris.shader_from_name("deferred_geometry")
 	assert(shader_exist)
-	spec_res := iris.shader_specialization_resource("deferred_character", shader)
-	shader_spec := spec_res.data.(^iris.Shader_Specialization)
+	spec_res := iris.shader_specialization_resource("deferred_default", shader)
+	c.default_spec = spec_res.data.(^iris.Shader_Specialization)
 	iris.set_specialization_subroutine(
 		shader,
-		shader_spec,
+		c.default_spec,
 		.Fragment,
 		"sampleAlbedo",
 		"sampleDefaultAlbedo",
 	)
+
+	tile_spec_res := iris.shader_specialization_resource("highlight_tile", shader)
+	c.highlight_spec = tile_spec_res.data.(^iris.Shader_Specialization)
+	iris.set_specialization_subroutine(
+		shader,
+		c.highlight_spec,
+		.Fragment,
+		"sampleAlbedo",
+		"sampleHighlightTileAlbedo",
+	)
+
+
 	mat_res := iris.material_resource(
-		iris.Material_Loader{name = "character", shader = shader, specialization = shader_spec},
+		iris.Material_Loader{name = "character", shader = shader, specialization = c.default_spec},
 	)
 	c.character_material = mat_res.data.(^iris.Material)
 	iris.set_material_map(
@@ -266,15 +283,16 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) -> ^iris.Layou
 
 init_grid :: proc(c: ^Combat_Context) {
 	tile_mesh := iris.plane_mesh(1, 1, 1, 1, 1).data.(^iris.Mesh)
-	tile_material := iris.material_resource(
+	c.tile_material_default =
+	iris.material_resource(
 		iris.Material_Loader{
 			name = "tile",
 			shader = c.character_material.shader,
-			specialization = c.character_material.specialization,
+			specialization = c.default_spec,
 		},
 	).data.(^iris.Material)
 	iris.set_material_map(
-		tile_material,
+		c.tile_material_default,
 		.Diffuse0,
 		iris.texture_resource(
 			iris.Texture_Loader{
@@ -286,10 +304,19 @@ init_grid :: proc(c: ^Combat_Context) {
 		).data.(^iris.Texture),
 	)
 
+	c.tile_material_highlight =
+	iris.material_resource(
+		iris.Material_Loader{
+			name = "tile_highlight",
+			shader = c.character_material.shader,
+			specialization = c.highlight_spec,
+		},
+	).data.(^iris.Material)
+
 	c.grid = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
 	for y in 0 ..< GRID_HEIGHT {
 		for x in 0 ..< GRID_WIDTH {
-			tile_node := iris.model_node_from_mesh(c.scene, tile_mesh, tile_material)
+			tile_node := iris.model_node_from_mesh(c.scene, tile_mesh, c.tile_material_default)
 			iris.node_local_transform(tile_node, iris.transform(t = coord_to_world({x, y})))
 			tile_node.local_bounds = iris.bounding_box_from_min_max(
 				p_min = {-0.5, -0.05, -0.5},
@@ -304,6 +331,14 @@ init_grid :: proc(c: ^Combat_Context) {
 			}
 		}
 	}
+
+	// range_test, _ := tiles_in_range(c, {2, 2}, 2, false)
+	// tiles_highlight(c, range_test, true)
+	// fmt.println(len(range_test))
+	// for tile in range_test {
+	// 	tile.node.materials[0] = c.tile_material_highlight
+	// 	fmt.println(index_to_coord(tile.index))
+	// }
 }
 
 init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
@@ -555,8 +590,9 @@ Tile_Info :: struct {
 
 Tile_Coordinate :: [2]int
 
-Move_Result :: enum {
+Tile_Result :: enum {
 	Ok,
+	Out_Of_Bounds,
 	Blocked,
 }
 
@@ -587,7 +623,14 @@ index_to_world :: proc(index: int) -> iris.Vector3 {
 	return {f32(x) - GRID_ORIGIN_X, 0.5, f32(y) - GRID_ORIGIN_Y}
 }
 
-tile_move_query :: proc(c: ^Combat_Context, index: int) -> (result: Move_Result) {
+tile_query :: proc(c: ^Combat_Context, index: int) -> (result: Tile_Result) {
+	x := index % GRID_WIDTH
+	y := index / GRID_WIDTH
+	if (x < 0 || x >= GRID_WIDTH) || (y < 0 || y >= GRID_HEIGHT) {
+		result = .Out_Of_Bounds
+		return
+	}
+
 	tile := c.grid[index]
 	switch content in tile.content {
 	case Empty_Tile:
@@ -610,9 +653,9 @@ move_character_to_tile_index :: proc(
 	info: ^Character_Info,
 	index: int,
 ) -> (
-	result: Move_Result,
+	result: Tile_Result,
 ) {
-	if tile_move_query(c, index) == .Ok {
+	if tile_query(c, index) == .Ok {
 		info.coord = coord_to_index(index)
 		c.grid[index].content = info
 		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
@@ -625,16 +668,185 @@ move_character_to_tile_coord :: proc(
 	info: ^Character_Info,
 	coord: Tile_Coordinate,
 ) -> (
-	result: Move_Result,
+	result: Tile_Result,
 ) {
 	index := coord_to_index(coord)
-	if tile_move_query(c, index) == .Ok {
+	if tile_query(c, index) == .Ok {
 		info.coord = coord
 		c.grid[index].content = info
 		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
 	}
 	return
 }
+
+/* TODO:
+	- A* search
+	- Range search
+*/
+
+adjacent_tiles :: proc(
+	c: ^Combat_Context,
+	coord: Tile_Coordinate,
+) -> (
+	result: [4]Maybe(Tile_Info),
+) {
+	adjacents := [len(iris.Direction)]Tile_Coordinate {
+		iris.Direction.Up = {coord.x, coord.y - 1},
+		iris.Direction.Right = {coord.x + 1, coord.y},
+		iris.Direction.Down = {coord.x, coord.y + 1},
+		iris.Direction.Left = {coord.x - 1, coord.y},
+	}
+
+	for direction in iris.Direction {
+		index := coord_to_index(adjacents[direction])
+		if tile_query(c, index) == .Ok {
+			result[direction] = c.grid[index]
+		}
+	}
+
+	return
+}
+
+tiles_highlight :: proc(c: ^Combat_Context, tiles: []Tile_Info, on: bool) {
+	for tile in tiles {
+		switch on {
+		case true:
+			tile.node.materials[0] = c.tile_material_highlight
+		case false:
+			tile.node.materials[0] = c.tile_material_default
+		}
+	}
+}
+
+tiles_in_range :: proc(
+	c: ^Combat_Context,
+	start: Tile_Coordinate,
+	range: int,
+	include_start: bool,
+	allocator := context.allocator,
+) -> (
+	[]Tile_Info,
+	bool,
+) {
+	contains :: proc(data: []Tile_Info, t: Tile_Info) -> bool {
+		for tile in data {
+			if t.index == tile.index {
+				return true
+			}
+		}
+		return false
+	}
+
+	start_index := coord_to_index(start)
+	if tile_query(c, start_index) != .Ok {
+		return {}, false
+	}
+
+	iris.begin_temp_allocation()
+	defer iris.end_temp_allocation()
+
+	os := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
+	ms := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
+	cs := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, allocator)
+
+	open_set := slice.into_dynamic(os)
+	middle_set := slice.into_dynamic(ms)
+	closed_set := slice.into_dynamic(cs)
+
+	clear(&open_set)
+	clear(&middle_set)
+	clear(&closed_set)
+
+	step := 0
+	append(&open_set, c.grid[start_index])
+	for step <= range {
+		for len(open_set) > 0 {
+			tile := pop(&open_set)
+			append(&closed_set, tile)
+
+			adjacents := adjacent_tiles(c, index_to_coord(tile.index))
+			for adjacent in adjacents {
+				if adjacent != nil {
+					adj := adjacent.?
+					visited :=
+						contains(open_set[:], adj) ||
+						contains(closed_set[:], adj) ||
+						contains(middle_set[:], adj)
+					if !visited {
+						append(&middle_set, adj)
+					}
+				}
+			}
+
+		}
+
+		for tile in middle_set {
+			append(&open_set, tile)
+		}
+		clear(&middle_set)
+		step += 1
+	}
+
+	return closed_set[:], true
+}
+
+// tiles_in_range :: proc(
+// 	c: ^Combat_Context,
+// 	start: Tile_Coordinate,
+// 	range: int,
+// 	include_start: bool,
+// 	allocator := context.allocator,
+// ) -> (
+// 	[]Tile_Info,
+// 	bool,
+// ) {
+// 	contains :: proc(data: []Tile_Info, t: Tile_Info) -> bool {
+// 		for tile in data {
+// 			if t.index == tile.index {
+// 				return true
+// 			}
+// 		}
+// 		return false
+// 	}
+
+// 	start_index := coord_to_index(start)
+// 	if tile_query(c, start_index) != .Ok {
+// 		return {}, false
+// 	}
+
+// 	iris.begin_temp_allocation()
+// 	defer iris.end_temp_allocation()
+
+// 	os := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
+// 	cs := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, allocator)
+
+// 	open_set := slice.into_dynamic(os)
+// 	closed_set := slice.into_dynamic(cs)
+
+// 	clear(&open_set)
+// 	clear(&closed_set)
+
+// 	step := 0
+// 	append(&open_set, c.grid[start_index])
+// 	for len(open_set) > 0 && step < range {
+// 		tile := pop(&open_set)
+// 		append(&closed_set, tile)
+
+// 		adjacents := adjacent_tiles(c, index_to_coord(tile.index))
+// 		for adjacent in adjacents {
+// 			if adjacent != nil {
+// 				adj := adjacent.?
+// 				if !contains(open_set[:], adj) && !contains(closed_set[:], adj) {
+// 					append(&open_set, adj)
+// 				}
+// 			}
+// 		}
+
+// 		step += 1
+// 	}
+
+// 	return closed_set[:], true
+// }
 
 //////////////////////////
 //////////
