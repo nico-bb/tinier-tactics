@@ -24,6 +24,7 @@ Combat_Context :: struct {
 	current:                 Turn_ID,
 
 	// Spatial
+	mouse_ray:               iris.Ray,
 	grid_model:              ^iris.Model_Node,
 	grid:                    []Tile_Info,
 
@@ -342,37 +343,65 @@ init_grid :: proc(c: ^Combat_Context) {
 init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
 	pc.ctx = c
 	pc.tiles = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
+	pc.path = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
 	pc.action_panel = init_action_ui(c)
 	pc.unit_portrait = init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
 	pc.target_portrait = init_portrait(c, iris.Vector2{1600 - 250 - GAME_MARGIN, GAME_MARGIN})
 	pc.info_panel = init_info_panel(c)
 	c.player_controller.refresh_portraits = true
 
-	anim_res := iris.animation_resource({name = "character_attack", loop = false})
-	animation := anim_res.data.(^iris.Animation)
-	animation.channels = make([]iris.Animation_Channel, 1)
+	// Attack animation
+	{
+		anim_res := iris.animation_resource({name = "character_attack", loop = false})
+		animation := anim_res.data.(^iris.Animation)
+		animation.channels = make([]iris.Animation_Channel, 1)
 
-	channel := iris.Animation_Channel {
-		kind            = .Translation,
-		mode            = .Linear,
-		frame_durations = make([]f32, 2),
-		frame_outputs   = make([]iris.Animation_Value, 2),
+		channel := iris.Animation_Channel {
+			kind            = .Translation,
+			mode            = .Linear,
+			frame_durations = make([]f32, 2),
+			frame_outputs   = make([]iris.Animation_Value, 2),
+		}
+
+		channel.frame_durations[0] = 0.5
+		channel.frame_durations[1] = 0.5
+
+		channel.frame_outputs[0] = f32(1)
+		channel.frame_outputs[1] = f32(0)
+
+		animation.channels[0] = channel
+
+		pc.attack_animation = iris.make_animation_player(animation)
+		pc.attack_animation.targets[0] = &pc.animation_offset
+		pc.attack_animation.targets_start_value[0] = f32(0)
+		iris.reset_animation(&pc.attack_animation)
 	}
 
-	channel.frame_durations[0] = 0.5
-	channel.frame_durations[1] = 0.5
+	// Movement animation
+	{
+		UNIT_MOVEMENT_DURATION :: 0.5
 
-	channel.frame_outputs[0] = f32(1)
-	channel.frame_outputs[1] = f32(0)
+		anim_res := iris.animation_resource({name = "character_movement", loop = false})
+		animation := anim_res.data.(^iris.Animation)
+		animation.channels = make([]iris.Animation_Channel, 1)
 
-	animation.channels[0] = channel
+		channel := iris.Animation_Channel {
+			kind            = .Translation,
+			mode            = .Linear,
+			frame_durations = make([]f32, 1),
+			frame_outputs   = make([]iris.Animation_Value, 1),
+		}
 
-	pc.attack_animation = iris.make_animation_player(animation)
-	pc.attack_animation.targets[0] = &pc.animation_offset
-	pc.attack_animation.targets_start_value[0] = iris.compute_animation_start_value(
-		animation.channels[0],
-	)
-	iris.reset_animation(&pc.attack_animation)
+		channel.frame_durations[0] = UNIT_MOVEMENT_DURATION
+		channel.frame_outputs[0] = f32(1)
+
+		animation.channels[0] = channel
+
+		pc.movement_animation = iris.make_animation_player(animation)
+		pc.movement_animation.targets[0] = &pc.animation_offset
+		pc.movement_animation.targets_start_value[0] = f32(0)
+		iris.reset_animation(&pc.movement_animation)
+	}
 }
 
 init_simulation :: proc(c: ^Combat_Context) {
@@ -454,6 +483,9 @@ Player_Controller :: struct {
 	selected_target_info: ^Character_Info,
 	tiles:                []Tile_Info,
 	tile_count:           int,
+	path:                 []Tile_Info,
+	path_length:          int,
+	path_index:           int,
 
 	// Spatial data
 	position:             iris.Vector3,
@@ -464,6 +496,8 @@ Player_Controller :: struct {
 	// All the animations
 	idle_animation:       iris.Animation_Player,
 	attack_animation:     iris.Animation_Player,
+	movement_animation:   iris.Animation_Player,
+	current_animation:    ^iris.Animation_Player,
 }
 
 Player_Controller_State :: enum {
@@ -471,6 +505,7 @@ Player_Controller_State :: enum {
 	Select_Move,
 	Select_Target,
 	Wait_For_Animation,
+	Wait_For_Movement,
 }
 
 start_player_turn :: proc(pc: ^Player_Controller, current: ^Character_Info) {
@@ -491,6 +526,23 @@ on_action_btn_pressed :: proc(data: rawptr, id: iris.Widget_ID) {
 	case .Attack:
 		controller_state_transition(pc, .Select_Target)
 	case .Wait:
+	}
+}
+
+on_animation_end :: proc(pc: ^Player_Controller) {
+	#partial switch pc.state {
+	case .Wait_For_Movement:
+		if pc.path_index + 1 < pc.path_length - 1 {
+			current := index_to_world(pc.path[pc.path_index + 1].index)
+			next := index_to_world(pc.path[pc.path_index + 2].index)
+
+			pc.position = current
+			pc.direction = linalg.vector_normalize(next - current)
+			iris.reset_animation(&pc.movement_animation)
+			pc.movement_animation.playing = true
+			pc.current_animation = &pc.movement_animation
+		}
+		pc.path_index += 1
 	}
 }
 
@@ -523,6 +575,42 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 	switch pc.state {
 	case .Idle:
 	case .Select_Move:
+		m_left := iris.mouse_button_state(.Left)
+		m_right := iris.mouse_button_state(.Right)
+		esc := iris.key_state(.Escape)
+
+		switch {
+		case .Just_Pressed in m_left:
+			// Find the tile cliked
+			for tile in pc.tiles[:pc.tile_count] {
+				result := iris.ray_bounding_box_intersection(
+					pc.ctx.mouse_ray,
+					tile.node.global_bounds,
+				)
+				if result.hit {
+					exist: bool
+					_, pc.path_length, exist = path_to_tile(
+						pc.ctx,
+						pc.character_info.coord,
+						index_to_coord(tile.index),
+						true,
+						pc.path[:],
+					)
+					pc.path_index = 0
+					pc.current_animation = &pc.movement_animation
+					pc.movement_animation.playing = true
+
+					first := index_to_world(pc.path[0].index)
+					then := index_to_world(pc.path[1].index)
+					pc.direction = linalg.vector_normalize(then - first)
+
+					controller_state_transition(pc, .Wait_For_Movement)
+				}
+			}
+
+		case .Just_Pressed in m_right || .Just_Pressed in esc:
+			controller_state_transition(pc, .Idle)
+		}
 
 	case .Select_Target:
 		m_left := iris.mouse_button_state(.Left)
@@ -535,8 +623,11 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 				t := pc.target_info.?
 				pos := iris.translation_from_matrix(pc.character_info.node.global_transform)
 				pc.direction = linalg.vector_normalize(pc.target_position - pos)
+
 				iris.reset_animation(&pc.attack_animation)
 				pc.attack_animation.playing = true
+				pc.current_animation = &pc.attack_animation
+
 				pc.state = .Wait_For_Animation
 				pc.selected_target_info = t
 			}
@@ -546,11 +637,22 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 
 	case .Wait_For_Animation:
 		if !pc.attack_animation.playing {
-			pc.state = .Idle
+			controller_state_transition(pc, .Idle)
 
 			action := Attack_Action {
 				target = pc.selected_target_info.turn_id,
 				amount = 1,
+			}
+			return action, true
+		}
+
+	case .Wait_For_Movement:
+		if pc.path_index >= pc.path_length {
+			// We are done moving
+			controller_state_transition(pc, .Idle)
+			action := Move_Action {
+				from = pc.character_info.coord,
+				to   = index_to_coord(pc.path[pc.path_length - 1].index),
 			}
 			return action, true
 		}
@@ -562,7 +664,7 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 controller_state_transition :: proc(pc: ^Player_Controller, to: Player_Controller_State) {
 	#partial switch pc.state {
 	case .Select_Move:
-		tiles_highlight(pc.ctx, pc.tiles[:pc.tile_count], true)
+		tiles_highlight(pc.ctx, pc.tiles[:pc.tile_count], false)
 	}
 
 	switch to {
@@ -591,7 +693,7 @@ controller_state_transition :: proc(pc: ^Player_Controller, to: Player_Controlle
 			pc.info_panel.children[0].derived.(^iris.Label_Widget),
 			"Please select a target",
 		)
-	case .Wait_For_Animation:
+	case .Wait_For_Animation, .Wait_For_Movement:
 		iris.widget_active(widget = pc.info_panel, active = false)
 	}
 
@@ -998,10 +1100,16 @@ Turn_ID :: distinct uint
 
 Combat_Action :: union {
 	Nil_Action,
+	Move_Action,
 	Attack_Action,
 }
 
 Nil_Action :: struct {}
+
+Move_Action :: struct {
+	from: Tile_Coordinate,
+	to:   Tile_Coordinate,
+}
 
 Attack_Action :: struct {
 	amount: int,
@@ -1061,9 +1169,12 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 
 		target_position: iris.Vector3
 		target_info: ^Character_Info
-		ray := iris.camera_mouse_ray(ctx.scene.main_camera)
+		ctx.mouse_ray = iris.camera_mouse_ray(ctx.scene.main_camera)
 		for character, i in ctx.characters {
-			result := iris.ray_bounding_box_intersection(ray, character.node.global_bounds)
+			result := iris.ray_bounding_box_intersection(
+				ctx.mouse_ray,
+				character.node.global_bounds,
+			)
 			if result.hit {
 				target_position = iris.translation_from_matrix(character.node.global_transform)
 				target_info = &ctx.characters[i]
@@ -1077,19 +1188,21 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 			ctx.player_controller.refresh_portraits = true
 		}
 
-		if ctx.player_controller.attack_animation.playing {
-			iris.advance_animation(
-				&ctx.player_controller.attack_animation,
-				f32(iris.elapsed_time()),
-			)
+		current_animation := ctx.player_controller.current_animation
+		if current_animation != nil && current_animation.playing {
+			done := iris.advance_animation(current_animation, f32(iris.elapsed_time()))
 
 			displacement :=
 				ctx.player_controller.direction * ctx.player_controller.animation_offset
+			fmt.println(ctx.player_controller.animation_offset)
 			pos := ctx.player_controller.position + displacement
 			iris.node_local_transform(
 				ctx.player_controller.character_info.node,
 				iris.transform(t = pos),
 			)
+			if done {
+				on_animation_end(&ctx.player_controller)
+			}
 		}
 	}
 
@@ -1106,6 +1219,10 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 
 	switch a in action {
 	case Nil_Action:
+	case Move_Action:
+		from_index := coord_to_index(a.from)
+		ctx.grid[from_index].content = nil
+		move_character_to_tile_coord(ctx, character, a.to)
 	case Attack_Action:
 		character_take_damage(ctx, a.target, a.amount)
 	}
