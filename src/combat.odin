@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:sort"
 import "core:slice"
+// import "core:math"
 import "core:math/linalg"
 import "lib:iris"
 
@@ -31,6 +32,7 @@ Combat_Context :: struct {
 }
 
 Combat_Button_ID :: enum {
+	Move,
 	Attack,
 	Wait,
 }
@@ -145,11 +147,13 @@ init_action_ui :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
 		c.ui,
 		iris.Button_Widget{
 			base = iris.Widget{
+				id = iris.Widget_ID(Combat_Button_ID.Move),
 				flags = iris.DEFAULT_LAYOUT_CHILD_FLAGS + {.Fit_Theme},
 				background = iris.Widget_Background{style = .Solid},
 			},
 			text = iris.Text{data = "Move", style = .Center},
-			data = c,
+			data = &c.player_controller,
+			callback = on_action_btn_pressed,
 		},
 	)
 	iris.layout_add_widget(action_panel, move_btn, 25)
@@ -158,6 +162,7 @@ init_action_ui :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
 		c.ui,
 		iris.Button_Widget{
 			base = iris.Widget{
+				id = iris.Widget_ID(Combat_Button_ID.Attack),
 				flags = iris.DEFAULT_LAYOUT_CHILD_FLAGS + {.Fit_Theme},
 				background = iris.Widget_Background{style = .Solid},
 			},
@@ -172,6 +177,7 @@ init_action_ui :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
 		c.ui,
 		iris.Button_Widget{
 			base = iris.Widget{
+				id = iris.Widget_ID(Combat_Button_ID.Wait),
 				flags = iris.DEFAULT_LAYOUT_CHILD_FLAGS + {.Fit_Theme},
 				background = iris.Widget_Background{style = .Solid},
 			},
@@ -331,17 +337,11 @@ init_grid :: proc(c: ^Combat_Context) {
 			}
 		}
 	}
-
-	// range_test, _ := tiles_in_range(c, {2, 2}, 2, false)
-	// tiles_highlight(c, range_test, true)
-	// fmt.println(len(range_test))
-	// for tile in range_test {
-	// 	tile.node.materials[0] = c.tile_material_highlight
-	// 	fmt.println(index_to_coord(tile.index))
-	// }
 }
 
 init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
+	pc.ctx = c
+	pc.tiles = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
 	pc.action_panel = init_action_ui(c)
 	pc.unit_portrait = init_portrait(c, iris.Vector2{GAME_MARGIN, GAME_MARGIN})
 	pc.target_portrait = init_portrait(c, iris.Vector2{1600 - 250 - GAME_MARGIN, GAME_MARGIN})
@@ -437,7 +437,8 @@ init_simulation :: proc(c: ^Combat_Context) {
 //////////////////////////
 
 Player_Controller :: struct {
-	// Context query callbacks
+	// Context
+	ctx:                  ^Combat_Context,
 
 	// UI
 	action_panel:         ^iris.Layout_Widget,
@@ -451,6 +452,8 @@ Player_Controller :: struct {
 	character_info:       ^Character_Info,
 	target_info:          Maybe(^Character_Info),
 	selected_target_info: ^Character_Info,
+	tiles:                []Tile_Info,
+	tile_count:           int,
 
 	// Spatial data
 	position:             iris.Vector3,
@@ -465,6 +468,7 @@ Player_Controller :: struct {
 
 Player_Controller_State :: enum {
 	Idle,
+	Select_Move,
 	Select_Target,
 	Wait_For_Animation,
 }
@@ -476,11 +480,14 @@ start_player_turn :: proc(pc: ^Player_Controller, current: ^Character_Info) {
 }
 
 on_action_btn_pressed :: proc(data: rawptr, id: iris.Widget_ID) {
-
 	pc := cast(^Player_Controller)data
 	btn_id := Combat_Button_ID(id)
 
+	fmt.println(id, btn_id)
+
 	switch btn_id {
+	case .Move:
+		controller_state_transition(pc, .Select_Move)
 	case .Attack:
 		controller_state_transition(pc, .Select_Target)
 	case .Wait:
@@ -515,6 +522,8 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 
 	switch pc.state {
 	case .Idle:
+	case .Select_Move:
+
 	case .Select_Target:
 		m_left := iris.mouse_button_state(.Left)
 		m_right := iris.mouse_button_state(.Right)
@@ -551,13 +560,37 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 }
 
 controller_state_transition :: proc(pc: ^Player_Controller, to: Player_Controller_State) {
+	#partial switch pc.state {
+	case .Select_Move:
+		tiles_highlight(pc.ctx, pc.tiles[:pc.tile_count], true)
+	}
+
 	switch to {
 	case .Idle:
 		iris.widget_active(widget = pc.action_panel, active = true)
 		iris.widget_active(widget = pc.unit_portrait, active = true)
 		iris.widget_active(widget = pc.info_panel, active = false)
+	case .Select_Move:
+		iris.widget_active(widget = pc.info_panel, active = true)
+		iris.set_label_text(
+			pc.info_panel.children[0].derived.(^iris.Label_Widget),
+			"Please select a destination",
+		)
+		_, pc.tile_count, _ = tiles_in_range(
+			c = pc.ctx,
+			start = pc.character_info.coord,
+			range = 2,
+			include_start = false,
+			buf = pc.tiles[:],
+		)
+		tiles_highlight(pc.ctx, pc.tiles[:pc.tile_count], true)
+
 	case .Select_Target:
 		iris.widget_active(widget = pc.info_panel, active = true)
+		iris.set_label_text(
+			pc.info_panel.children[0].derived.(^iris.Label_Widget),
+			"Please select a target",
+		)
 	case .Wait_For_Animation:
 		iris.widget_active(widget = pc.info_panel, active = false)
 	}
@@ -606,7 +639,6 @@ coord_to_world :: proc(coord: Tile_Coordinate) -> (result: iris.Vector3) {
 	GRID_ORIGIN_X :: f32(GRID_WIDTH) / 2
 	GRID_ORIGIN_Y :: f32(GRID_HEIGHT) / 2
 	result = {f32(coord.x) - GRID_ORIGIN_X, 0.0, f32(coord.y) - GRID_ORIGIN_Y}
-	fmt.printf("START: [%f, %f], TILE: %v, TO: %v\n", GRID_ORIGIN_X, GRID_ORIGIN_X, coord, result)
 	return
 }
 
@@ -623,10 +655,9 @@ index_to_world :: proc(index: int) -> iris.Vector3 {
 	return {f32(x) - GRID_ORIGIN_X, 0.5, f32(y) - GRID_ORIGIN_Y}
 }
 
-tile_query :: proc(c: ^Combat_Context, index: int) -> (result: Tile_Result) {
-	x := index % GRID_WIDTH
-	y := index / GRID_WIDTH
-	if (x < 0 || x >= GRID_WIDTH) || (y < 0 || y >= GRID_HEIGHT) {
+tile_query :: proc(c: ^Combat_Context, coord: Tile_Coordinate) -> (result: Tile_Result) {
+	index := coord_to_index(coord)
+	if (coord.x < 0 || coord.x >= GRID_WIDTH) || (coord.y < 0 || coord.y >= GRID_HEIGHT) {
 		result = .Out_Of_Bounds
 		return
 	}
@@ -655,7 +686,7 @@ move_character_to_tile_index :: proc(
 ) -> (
 	result: Tile_Result,
 ) {
-	if tile_query(c, index) == .Ok {
+	if tile_query(c, index_to_coord(index)) == .Ok {
 		info.coord = coord_to_index(index)
 		c.grid[index].content = info
 		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
@@ -671,7 +702,7 @@ move_character_to_tile_coord :: proc(
 	result: Tile_Result,
 ) {
 	index := coord_to_index(coord)
-	if tile_query(c, index) == .Ok {
+	if tile_query(c, coord) == .Ok {
 		info.coord = coord
 		c.grid[index].content = info
 		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
@@ -699,7 +730,7 @@ adjacent_tiles :: proc(
 
 	for direction in iris.Direction {
 		index := coord_to_index(adjacents[direction])
-		if tile_query(c, index) == .Ok {
+		if tile_query(c, adjacents[direction]) == .Ok {
 			result[direction] = c.grid[index]
 		}
 	}
@@ -723,9 +754,10 @@ tiles_in_range :: proc(
 	start: Tile_Coordinate,
 	range: int,
 	include_start: bool,
-	allocator := context.allocator,
+	buf: []Tile_Info,
 ) -> (
 	[]Tile_Info,
+	int,
 	bool,
 ) {
 	contains :: proc(data: []Tile_Info, t: Tile_Info) -> bool {
@@ -737,24 +769,32 @@ tiles_in_range :: proc(
 		return false
 	}
 
+	at :: proc(data: []Tile_Info, t: Tile_Info) -> (index: int, exist: bool) {
+		for tile, i in data {
+			if t.index == tile.index {
+				return i, true
+			}
+		}
+		return -1, false
+	}
+
 	start_index := coord_to_index(start)
-	if tile_query(c, start_index) != .Ok {
-		return {}, false
+	if include_start && tile_query(c, start) != .Ok {
+		return {}, -1, false
 	}
 
 	iris.begin_temp_allocation()
 	defer iris.end_temp_allocation()
 
 	os := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
-	ms := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
-	cs := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, allocator)
+	f := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
 
 	open_set := slice.into_dynamic(os)
-	middle_set := slice.into_dynamic(ms)
-	closed_set := slice.into_dynamic(cs)
+	frontier := slice.into_dynamic(f)
+	closed_set := slice.into_dynamic(buf)
 
 	clear(&open_set)
-	clear(&middle_set)
+	clear(&frontier)
 	clear(&closed_set)
 
 	step := 0
@@ -771,82 +811,153 @@ tiles_in_range :: proc(
 					visited :=
 						contains(open_set[:], adj) ||
 						contains(closed_set[:], adj) ||
-						contains(middle_set[:], adj)
+						contains(frontier[:], adj)
 					if !visited {
-						append(&middle_set, adj)
+						append(&frontier, adj)
 					}
 				}
 			}
 
 		}
 
-		for tile in middle_set {
+		for tile in frontier {
 			append(&open_set, tile)
 		}
-		clear(&middle_set)
+		clear(&frontier)
 		step += 1
 	}
 
-	return closed_set[:], true
+	if !include_start {
+		si, _ := at(closed_set[:], c.grid[start_index])
+		unordered_remove(&closed_set, si)
+	}
+	return closed_set[:], len(closed_set), true
 }
 
-// tiles_in_range :: proc(
-// 	c: ^Combat_Context,
-// 	start: Tile_Coordinate,
-// 	range: int,
-// 	include_start: bool,
-// 	allocator := context.allocator,
-// ) -> (
-// 	[]Tile_Info,
-// 	bool,
-// ) {
-// 	contains :: proc(data: []Tile_Info, t: Tile_Info) -> bool {
-// 		for tile in data {
-// 			if t.index == tile.index {
-// 				return true
-// 			}
-// 		}
-// 		return false
-// 	}
+// This path searching implementation is O(n) (we use a linear search for the min)
+// This isn't the best but considering that the
+// combat grids are pretty small, it shouldn't matter much
+path_to_tile :: proc(
+	c: ^Combat_Context,
+	start: Tile_Coordinate,
+	end: Tile_Coordinate,
+	include_start: bool,
+	buf: []Tile_Info,
+) -> (
+	path: []Tile_Info,
+	path_length: int,
+	path_found: bool,
+) {
+	MOVEMENT_COST :: 5
+	Search_Node :: struct {
+		data:   Tile_Info,
+		parent: Maybe(^Search_Node),
+		g_cost: int, // The accumulation of all the previous cost
+		h_cost: int, // The heuristic or Manhattan distance in this case
+		f_cost: int, // The sum of the g_cost and h_cost
+	}
+	search_min :: proc(node_set: []Search_Node) -> (index: int) {
+		current_min := 99999
+		for node, i in node_set {
+			if node.f_cost < current_min {
+				index = i
+				current_min = node.f_cost
+			}
+		}
+		return
+	}
+	heuristic :: proc(current, end: Tile_Coordinate) -> (h: int) {
+		return abs(current.x - end.x) + abs(current.y - end.y)
+	}
+	contains :: proc(node_set: []Search_Node, node: Search_Node) -> (at: int, exist: bool) {
+		for n, i in node_set {
+			if node.data.index == n.data.index {
+				return i, true
+			}
+		}
+		return -1, false
+	}
 
-// 	start_index := coord_to_index(start)
-// 	if tile_query(c, start_index) != .Ok {
-// 		return {}, false
-// 	}
+	start_index := coord_to_index(start)
+	end_index := coord_to_index(end)
+	if (include_start && tile_query(c, start) != .Ok) && tile_query(c, end) != .Ok {
+		return {}, -1, false
+	}
 
-// 	iris.begin_temp_allocation()
-// 	defer iris.end_temp_allocation()
+	iris.begin_temp_allocation()
+	defer iris.end_temp_allocation()
 
-// 	os := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
-// 	cs := make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT, allocator)
+	os := make([]Search_Node, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
+	cs := make([]Search_Node, GRID_WIDTH * GRID_HEIGHT, context.temp_allocator)
 
-// 	open_set := slice.into_dynamic(os)
-// 	closed_set := slice.into_dynamic(cs)
+	open_set := slice.into_dynamic(os)
+	closed_set := slice.into_dynamic(cs)
 
-// 	clear(&open_set)
-// 	clear(&closed_set)
+	clear(&open_set)
+	clear(&closed_set)
 
-// 	step := 0
-// 	append(&open_set, c.grid[start_index])
-// 	for len(open_set) > 0 && step < range {
-// 		tile := pop(&open_set)
-// 		append(&closed_set, tile)
+	end_node: ^Search_Node
+	append(&open_set, Search_Node{data = c.grid[start_index], parent = nil})
+	search: for len(open_set) > 0 {
+		min_index := search_min(open_set[:])
+		current := open_set[min_index]
+		unordered_remove(&open_set, min_index)
+		append(&closed_set, current)
 
-// 		adjacents := adjacent_tiles(c, index_to_coord(tile.index))
-// 		for adjacent in adjacents {
-// 			if adjacent != nil {
-// 				adj := adjacent.?
-// 				if !contains(open_set[:], adj) && !contains(closed_set[:], adj) {
-// 					append(&open_set, adj)
-// 				}
-// 			}
-// 		}
+		adjacents := adjacent_tiles(c, index_to_coord(current.data.index))
+		search_adjacents: for adj in adjacents {
+			if adj != nil {
+				adjacent := adj.?
 
-// 		step += 1
-// 	}
+				next := Search_Node {
+					data   = adjacent,
+					parent = &closed_set[len(closed_set) - 1],
+					g_cost = current.g_cost + 1,
+					h_cost = heuristic(index_to_coord(adjacent.index), end),
+				}
+				next.f_cost = next.g_cost + next.h_cost
 
-// 	return closed_set[:], true
-// }
+				// Are we done yet?
+				if adjacent.index == end_index {
+					// unimplemented("Path retrace not done yet")
+					append(&closed_set, next)
+					end_node = &closed_set[len(closed_set) - 1]
+					break search
+				}
+
+				if at, exist := contains(open_set[:], next); exist {
+					other := &open_set[at]
+					if next.f_cost < other.f_cost {
+						other.parent = next.parent
+						other.f_cost = next.f_cost
+					}
+					continue search_adjacents
+				}
+
+				if _, exist := contains(closed_set[:], next); !exist {
+					append(&open_set, next)
+				}
+			}
+		}
+	}
+
+	path_buf := slice.into_dynamic(buf)
+	clear(&path_buf)
+	current := end_node
+	for {
+		if current.parent == nil {
+			if include_start {
+				append(&path_buf, current.data)
+			}
+			break
+		}
+		append(&path_buf, current.data)
+		current = current.parent.?
+	}
+	slice.reverse(path_buf[:])
+
+	return path_buf[:], len(path_buf), true
+}
 
 //////////////////////////
 //////////
