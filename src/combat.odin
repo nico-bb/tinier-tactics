@@ -366,7 +366,7 @@ init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
 		channel.frame_durations[0] = 0.5
 		channel.frame_durations[1] = 0.5
 
-		channel.frame_outputs[0] = f32(1)
+		channel.frame_outputs[0] = f32(0.5)
 		channel.frame_outputs[1] = f32(0)
 
 		animation.channels[0] = channel
@@ -532,9 +532,10 @@ on_action_btn_pressed :: proc(data: rawptr, id: iris.Widget_ID) {
 on_animation_end :: proc(pc: ^Player_Controller) {
 	#partial switch pc.state {
 	case .Wait_For_Movement:
-		if pc.path_index + 1 < pc.path_length - 1 {
-			current := index_to_world(pc.path[pc.path_index + 1].index)
-			next := index_to_world(pc.path[pc.path_index + 2].index)
+		pc.path_index += 1
+		if pc.path_index < pc.path_length - 1 {
+			current := index_to_world(pc.path[pc.path_index].index)
+			next := index_to_world(pc.path[pc.path_index + 1].index)
 
 			pc.position = current
 			pc.direction = linalg.vector_normalize(next - current)
@@ -542,7 +543,6 @@ on_animation_end :: proc(pc: ^Player_Controller) {
 			pc.movement_animation.playing = true
 			pc.current_animation = &pc.movement_animation
 		}
-		pc.path_index += 1
 	}
 }
 
@@ -647,7 +647,7 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 		}
 
 	case .Wait_For_Movement:
-		if pc.path_index >= pc.path_length {
+		if pc.path_index == pc.path_length - 1 {
 			// We are done moving
 			controller_state_transition(pc, .Idle)
 			action := Move_Action {
