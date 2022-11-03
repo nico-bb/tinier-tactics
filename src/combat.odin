@@ -5,7 +5,9 @@ import "core:sort"
 import "core:slice"
 // import "core:math"
 import "core:math/linalg"
+
 import "lib:iris"
+import "lib:iris/gltf"
 
 Combat_Context :: struct {
 	scene:                   ^iris.Scene,
@@ -84,23 +86,60 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		).data.(^iris.Texture),
 	)
 
-	c.character_mesh = iris.cube_mesh(1, 1, 1).data.(^iris.Mesh)
+	// c.character_mesh = iris.cube_mesh(1, 1, 1).data.(^iris.Mesh)
+	character_doc, err := gltf.parse_from_file(
+		"models/cow.gltf",
+		.Gltf_External,
+		context.temp_allocator,
+		context.temp_allocator,
+	)
+	assert(err == nil)
+	iris.load_resources_from_gltf(&character_doc)
+	character_node, exist := gltf.find_node_with_name(&character_doc, "Cow_mesh")
+	assert(exist)
 
 	c.scene = iris.scene_resource("combat", {.Draw_Debug_Collisions}).data.(^iris.Scene)
 	camera := iris.new_default_camera(c.scene)
 
-	c.player = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
-	c.player.local_bounds = iris.bounding_box_from_min_max(
-		iris.Vector3{-0.5, -0.5, -0.5},
-		iris.Vector3{0.5, 0.5, 0.5},
+	player_parent := iris.new_node(c.scene, iris.Empty_Node, character_node.global_transform)
+	iris.insert_node(c.scene, player_parent)
+	c.player = iris.new_node(c.scene, iris.Model_Node)
+	iris.model_node_from_gltf(
+		c.player,
+		iris.Model_Loader{
+			flags = {.Load_Position, .Load_Normal, .Load_TexCoord0},
+			shader_ref = shader,
+			shader_spec = c.default_spec,
+			rigged = false,
+		},
+		character_node,
 	)
+
+	// c.player = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
+	// c.player.local_bounds = iris.bounding_box_from_min_max(
+	// 	iris.Vector3{-0.5, -0.5, -0.5},
+	// 	iris.Vector3{0.5, 0.5, 0.5},
+	// )
 	iris.node_local_transform(c.player, iris.transform(t = {0, 0, 1}))
 
-	c.enemy = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
-	c.enemy.local_bounds = iris.bounding_box_from_min_max(
-		iris.Vector3{-0.5, -0.5, -0.5},
-		iris.Vector3{0.5, 0.5, 0.5},
+	enemy_parent := iris.new_node(c.scene, iris.Empty_Node, character_node.global_transform)
+	iris.insert_node(c.scene, enemy_parent)
+	c.enemy = iris.new_node(c.scene, iris.Model_Node)
+	iris.model_node_from_gltf(
+		c.enemy,
+		iris.Model_Loader{
+			flags = {.Load_Position, .Load_Normal, .Load_TexCoord0},
+			shader_ref = shader,
+			shader_spec = c.default_spec,
+			rigged = false,
+		},
+		character_node,
 	)
+	// c.enemy = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
+	// c.enemy.local_bounds = iris.bounding_box_from_min_max(
+	// 	iris.Vector3{-0.5, -0.5, -0.5},
+	// 	iris.Vector3{0.5, 0.5, 0.5},
+	// )
 	iris.node_local_transform(c.enemy, iris.transform(t = {0, 0, -1}))
 
 	iris.insert_node(c.scene, camera)
@@ -289,27 +328,64 @@ init_portrait :: proc(c: ^Combat_Context, position: iris.Vector2) -> ^iris.Layou
 }
 
 init_grid :: proc(c: ^Combat_Context) {
-	tile_mesh := iris.plane_mesh(1, 1, 1, 1, 1).data.(^iris.Mesh)
-	c.tile_material_default =
-	iris.material_resource(
-		iris.Material_Loader{
-			name = "tile",
-			shader = c.character_material.shader,
-			specialization = c.default_spec,
-		},
-	).data.(^iris.Material)
-	iris.set_material_map(
-		c.tile_material_default,
-		.Diffuse0,
-		iris.texture_resource(
-			iris.Texture_Loader{
-				info = iris.File_Texture_Info{path = "textures/grid_texture.png"},
-				filter = .Nearest,
-				wrap = .Repeat,
-				space = .sRGB,
-			},
-		).data.(^iris.Texture),
+	wood_tile_doc, err := gltf.parse_from_file(
+		"models/grass_floor.gltf",
+		.Gltf_External,
+		context.temp_allocator,
+		context.temp_allocator,
 	)
+	fmt.println(err)
+	assert(err == nil)
+	iris.load_resources_from_gltf(&wood_tile_doc)
+	wood_tile_node, exist := gltf.find_node_with_name(&wood_tile_doc, "floor_A")
+	assert(exist)
+
+	// mesh_node := iris.new_node(c.scene, iris.Model_Node)
+	// iris.model_node_from_gltf(
+	// 	mesh_node,
+	// 	iris.Model_Loader{
+	// 		flags = {.Load_Position, .Load_Normal, .Load_TexCoord0},
+	// 		shader_ref = c.character_material.shader,
+	// 		shader_spec = c.default_spec,
+	// 		rigged = false,
+	// 	},
+	// 	wood_tile_node,
+	// )
+	// iris.set_material_map(
+	// 	mesh_node.materials[0],
+	// 	.Diffuse0,
+	// 	iris.texture_resource(
+	// 		iris.Texture_Loader{
+	// 			info = iris.File_Texture_Info{path = "textures/grid_texture.png"},
+	// 			filter = .Nearest,
+	// 			wrap = .Repeat,
+	// 			space = .sRGB,
+	// 		},
+	// 	).data.(^iris.Texture),
+	// )
+	// iris.insert_node(c.scene, mesh_node)
+
+	// tile_mesh := iris.plane_mesh(1, 1, 1, 1, 1).data.(^iris.Mesh)
+	// c.tile_material_default =
+	// iris.material_resource(
+	// 	iris.Material_Loader{
+	// 		name = "tile",
+	// 		shader = c.character_material.shader,
+	// 		specialization = c.default_spec,
+	// 	},
+	// ).data.(^iris.Material)
+	// iris.set_material_map(
+	// 	c.tile_material_default,
+	// 	.Diffuse0,
+	// 	iris.texture_resource(
+	// 		iris.Texture_Loader{
+	// 			info = iris.File_Texture_Info{path = "textures/grid_texture.png"},
+	// 			filter = .Nearest,
+	// 			wrap = .Repeat,
+	// 			space = .sRGB,
+	// 		},
+	// 	).data.(^iris.Texture),
+	// )
 
 	c.tile_material_highlight =
 	iris.material_resource(
@@ -320,16 +396,29 @@ init_grid :: proc(c: ^Combat_Context) {
 		},
 	).data.(^iris.Material)
 
+	tiles_parent := iris.new_node(c.scene, iris.Empty_Node)
+	iris.insert_node(c.scene, tiles_parent)
 	c.grid = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
 	for y in 0 ..< GRID_HEIGHT {
 		for x in 0 ..< GRID_WIDTH {
-			tile_node := iris.model_node_from_mesh(c.scene, tile_mesh, c.tile_material_default)
-			iris.node_local_transform(tile_node, iris.transform(t = coord_to_world({x, y})))
-			tile_node.local_bounds = iris.bounding_box_from_min_max(
-				p_min = {-0.5, -0.05, -0.5},
-				p_max = {0.5, 0.05, 0.5},
+			tile_node := iris.new_node(c.scene, iris.Model_Node)
+			iris.model_node_from_gltf(
+				tile_node,
+				iris.Model_Loader{
+					flags = {.Load_Position, .Load_Normal, .Load_TexCoord0},
+					shader_ref = c.character_material.shader,
+					shader_spec = c.default_spec,
+					rigged = false,
+				},
+				wood_tile_node,
 			)
-			iris.insert_node(c.scene, tile_node)
+			v := coord_to_world({x, y})
+			iris.node_local_transform(tile_node, iris.transform(t = {v.x, v.y, v.z}))
+			// tile_node.local_bounds = iris.bounding_box_from_min_max(
+			// 	p_min = {-0.5, -0.05, -0.5},
+			// 	p_max = {0.5, 0.05, 0.5},
+			// )
+			iris.insert_node(c.scene, tile_node, tiles_parent)
 
 			c.grid[y * GRID_WIDTH + x] = Tile_Info {
 				index   = y * GRID_WIDTH + x,
