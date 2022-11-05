@@ -66,7 +66,7 @@
     "materials" : [
         {
             "doubleSided" : true,
-            "name" : "Cow_M",
+            "name" : "cow_material",
             "pbrMetallicRoughness" : {
                 "baseColorTexture" : {
                     "index" : 0

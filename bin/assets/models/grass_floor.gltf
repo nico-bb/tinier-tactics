@@ -21,7 +21,7 @@
     "materials" : [
         {
             "doubleSided" : true,
-            "name" : "atlas_retroForest_A.001",
+            "name" : "grass_material",
             "pbrMetallicRoughness" : {
                 "baseColorTexture" : {
                     "index" : 0

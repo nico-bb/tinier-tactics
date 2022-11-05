@@ -22,6 +22,7 @@ Combat_Context :: struct {
 
 	// Logic
 	player_controller:       Player_Controller,
+	ai_controller:           AI_Controller,
 	characters:              [dynamic]Character_Info,
 	current:                 Turn_ID,
 
@@ -44,7 +45,7 @@ GRID_WIDTH :: 5
 GRID_HEIGHT :: 5
 
 init_combat_context :: proc(c: ^Combat_Context) {
-	iris.add_light(.Directional, iris.Vector3{2, 3, 2}, {100, 100, 90, 1}, false)
+	iris.add_light(.Directional, iris.Vector3{2, 3, 2}, {100, 100, 90, 1}, true)
 
 	shader, shader_exist := iris.shader_from_name("deferred_geometry")
 	assert(shader_exist)
@@ -387,15 +388,6 @@ init_grid :: proc(c: ^Combat_Context) {
 	// 	).data.(^iris.Texture),
 	// )
 
-	c.tile_material_highlight =
-	iris.material_resource(
-		iris.Material_Loader{
-			name = "tile_highlight",
-			shader = c.character_material.shader,
-			specialization = c.highlight_spec,
-		},
-	).data.(^iris.Material)
-
 	tiles_parent := iris.new_node(c.scene, iris.Empty_Node)
 	iris.insert_node(c.scene, tiles_parent)
 	c.grid = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
@@ -420,6 +412,8 @@ init_grid :: proc(c: ^Combat_Context) {
 			// )
 			iris.insert_node(c.scene, tile_node, tiles_parent)
 
+			// c.tile
+
 			c.grid[y * GRID_WIDTH + x] = Tile_Info {
 				index   = y * GRID_WIDTH + x,
 				node    = tile_node,
@@ -427,6 +421,17 @@ init_grid :: proc(c: ^Combat_Context) {
 			}
 		}
 	}
+
+	c.tile_material_default, exist = iris.material_from_name("grass_material")
+	assert(exist)
+	c.tile_material_highlight =
+	iris.material_resource(
+		iris.Material_Loader{
+			name = "tile_highlight",
+			shader = c.character_material.shader,
+			specialization = c.highlight_spec,
+		},
+	).data.(^iris.Material)
 }
 
 init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
