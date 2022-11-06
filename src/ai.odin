@@ -12,7 +12,7 @@ Behavior_Tree :: struct {
 	allocator:  mem.Allocator,
 }
 
-Behavior_Blackboard :: distinct rawptr
+Behavior_Blackboard :: map[int]rawptr
 
 Behavior_Results :: distinct bit_set[Behavior_Result]
 
@@ -173,6 +173,10 @@ AI_Controller :: struct {
 	buffered_action: Combat_Action,
 }
 
+AI_Data_Kind :: enum {
+	Target,
+}
+
 init_ai_controller :: proc(ctx: ^Combat_Context) {
 	ctx.ai_controller = AI_Controller{}
 	ctx.ai_controller.b_tree = new_behavior_tree(ctx.ai_controller.mem_buffer[:])
@@ -181,10 +185,10 @@ init_ai_controller :: proc(ctx: ^Combat_Context) {
 	ai.b_tree.root = new_behavior_node_from(
 		&ai.b_tree,
 		Behavior_Branch_Node{
-			condtion = new_behavior_node_from(&ai.b_tree, Behavior_Condition_Node {
-					user_data = ai,
-					condition_proc = proc(data: rawptr) -> bool {return false},
-				}),
+			condtion = new_behavior_node_from(
+				&ai.b_tree,
+				Behavior_Condition_Node{user_data = ai, condition_proc = ai_enemy_in_close_range},
+			),
 			left = new_behavior_node_from(&ai.b_tree, Behavior_Action_Node {
 					user_data = ai,
 					effect_proc = proc(data: rawptr) {},
@@ -204,7 +208,17 @@ ai_enemy_in_close_range :: proc(data: rawptr) -> bool {
 	for adj in adjacents {
 		if adj != nil {
 			adjacent := adj.?
-
+			if target, ok := adjacent.content.(^Character_Info); ok {
+				if target.team != ai.agent_info.team {
+					b_id := int(AI_Data_Kind.Target)
+					ai.b_tree.blackboard[b_id] = target
+					return true
+				}
+			}
 		}
 	}
+
+	return false
 }
+
+ai_attack_enemy :: proc() {}
