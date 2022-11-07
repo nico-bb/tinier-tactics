@@ -43,6 +43,7 @@ Combat_Button_ID :: enum {
 
 GRID_WIDTH :: 5
 GRID_HEIGHT :: 5
+CHARACTER_SCALE :: iris.Vector3{0.5, 0.5, 0.5}
 
 init_combat_context :: proc(c: ^Combat_Context) {
 	iris.add_light(.Directional, iris.Vector3{2, 3, 2}, {100, 100, 90, 1}, true)
@@ -117,8 +118,6 @@ init_combat_context :: proc(c: ^Combat_Context) {
 	)
 	iris.flag_model_node_as_dynamic(c.player)
 
-	iris.node_local_transform(c.player, iris.transform(t = {0, 0, 1}))
-
 	enemy_parent := iris.new_node(c.scene, iris.Empty_Node, character_node.global_transform)
 	iris.insert_node(c.scene, enemy_parent)
 	c.enemy = iris.new_node(c.scene, iris.Model_Node)
@@ -132,12 +131,7 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		},
 		character_node,
 	)
-	// c.enemy = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
-	// c.enemy.local_bounds = iris.bounding_box_from_min_max(
-	// 	iris.Vector3{-0.5, -0.5, -0.5},
-	// 	iris.Vector3{0.5, 0.5, 0.5},
-	// )
-	iris.node_local_transform(c.enemy, iris.transform(t = {0, 0, -1}))
+	iris.flag_model_node_as_dynamic(c.enemy)
 
 	iris.insert_node(c.scene, camera)
 	iris.insert_node(c.scene, c.player)
@@ -224,7 +218,6 @@ init_action_ui :: proc(c: ^Combat_Context) -> ^iris.Layout_Widget {
 		},
 	)
 	iris.layout_add_widget(action_panel, wait_btn, 25)
-
 
 	return action_panel
 }
@@ -800,7 +793,7 @@ index_to_world :: proc(index: int) -> iris.Vector3 {
 	x := index % GRID_WIDTH
 	y := index / GRID_WIDTH
 
-	return {f32(x) - GRID_ORIGIN_X, 0.5, f32(y) - GRID_ORIGIN_Y}
+	return {f32(x) - GRID_ORIGIN_X, 0.0, f32(y) - GRID_ORIGIN_Y}
 }
 
 tile_query :: proc(c: ^Combat_Context, coord: Tile_Coordinate) -> (result: Tile_Result) {
@@ -837,7 +830,10 @@ move_character_to_tile_index :: proc(
 	if tile_query(c, index_to_coord(index)) == .Ok {
 		info.coord = coord_to_index(index)
 		c.grid[index].content = info
-		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
+		iris.node_local_transform(
+			info.node,
+			iris.transform(t = coord_to_world(info.coord), s = CHARACTER_SCALE),
+		)
 	}
 	return
 }
@@ -853,7 +849,10 @@ move_character_to_tile_coord :: proc(
 	if tile_query(c, coord) == .Ok {
 		info.coord = coord
 		c.grid[index].content = info
-		iris.node_local_transform(info.node, iris.transform(t = coord_to_world(info.coord)))
+		iris.node_local_transform(
+			info.node,
+			iris.transform(t = coord_to_world(info.coord), s = CHARACTER_SCALE),
+		)
 	}
 	return
 }
@@ -1242,7 +1241,7 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 			pos := ctx.player_controller.position + displacement
 			iris.node_local_transform(
 				ctx.player_controller.character_info.node,
-				iris.transform(t = pos),
+				iris.transform(t = pos, s = CHARACTER_SCALE),
 			)
 			if done {
 				on_animation_end(&ctx.player_controller)
