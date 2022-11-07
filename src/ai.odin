@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:mem"
 import "lib:iris/allocators"
 
@@ -82,11 +83,9 @@ Behavior_Logic_Node :: struct {
 	repeat_times: int,
 }
 
-new_behavior_tree :: proc(buf: []byte) -> Behavior_Tree {
-	tree := Behavior_Tree{}
-	allocators.init_free_list_allocator(&tree.free_list, buf, .Find_Best, 4)
-	tree.allocator = allocators.free_list_allocator(&tree.free_list)
-	return tree
+init_behavior_tree :: proc(bt: ^Behavior_Tree, buf: []byte) {
+	allocators.init_free_list_allocator(&bt.free_list, buf, .Find_Best, 4)
+	bt.allocator = allocators.free_list_allocator(&bt.free_list)
 }
 
 destroy_behavior_tree :: proc(bt: ^Behavior_Tree) {
@@ -95,12 +94,14 @@ destroy_behavior_tree :: proc(bt: ^Behavior_Tree) {
 
 new_behavior_node :: proc(bt: ^Behavior_Tree, $T: typeid) -> ^T {
 	node := new(T, bt.allocator)
+	node.derived = node
 	init_behavior_node(bt, node)
 	return node
 }
 
 new_behavior_node_from :: proc(bt: ^Behavior_Tree, proto: $T) -> ^T {
 	node := new_clone(proto, bt.allocator)
+	node.derived = node
 	init_behavior_node(bt, node)
 	return node
 }
@@ -161,7 +162,7 @@ execute_node :: proc(node: ^Behavior_Node) -> (result: Behavior_Result) {
 			execute_node(d.right)
 		}
 	}
-	return .Failure
+	return
 }
 
 AI_Controller :: struct {
@@ -179,9 +180,10 @@ AI_Data_Kind :: enum {
 
 init_ai_controller :: proc(ctx: ^Combat_Context) {
 	ctx.ai_controller = AI_Controller{}
-	ctx.ai_controller.b_tree = new_behavior_tree(ctx.ai_controller.mem_buffer[:])
 
 	ai := &ctx.ai_controller
+	ai.ctx = ctx
+	init_behavior_tree(&ai.b_tree, ai.mem_buffer[:])
 	ai.b_tree.root = new_behavior_node_from(
 		&ai.b_tree,
 		Behavior_Branch_Node{
@@ -189,22 +191,39 @@ init_ai_controller :: proc(ctx: ^Combat_Context) {
 				&ai.b_tree,
 				Behavior_Condition_Node{user_data = ai, condition_proc = ai_enemy_in_close_range},
 			),
-			left = new_behavior_node_from(&ai.b_tree, Behavior_Action_Node {
-					user_data = ai,
-					effect_proc = proc(data: rawptr) {},
-				}),
-			right = new_behavior_node_from(&ai.b_tree, Behavior_Action_Node {
-					user_data = ai,
-					effect_proc = proc(data: rawptr) {},
-				}),
+			left = new_behavior_node_from(
+				&ai.b_tree,
+				Behavior_Action_Node{user_data = ai, effect_proc = ai_attack_enemy},
+			),
+			right = new_behavior_node_from(
+				&ai.b_tree,
+				Behavior_Action_Node{user_data = ai, effect_proc = ai_move_to_closest_enemy},
+			),
 		},
 	)
+}
+
+compute_ai_action :: proc(
+	ctx: ^Combat_Context,
+	info: ^Character_Info,
+) -> (
+	action: Combat_Action,
+	done: bool,
+) {
+	ai := &ctx.ai_controller
+	ai.agent_info = info
+
+	execute_node(ai.b_tree.root)
+
+	action = Nil_Action{}
+	done = true
+	return
 }
 
 ai_enemy_in_close_range :: proc(data: rawptr) -> bool {
 	ai := cast(^AI_Controller)data
 
-	adjacents := adjacent_tiles(ai.ctx, ai.agent_info.coord)
+	adjacents := adjacent_tiles(c = ai.ctx, coord = ai.agent_info.coord, with_blocked_tiles = true)
 	for adj in adjacents {
 		if adj != nil {
 			adjacent := adj.?
@@ -221,4 +240,10 @@ ai_enemy_in_close_range :: proc(data: rawptr) -> bool {
 	return false
 }
 
-ai_attack_enemy :: proc() {}
+ai_attack_enemy :: proc(data: rawptr) {
+	fmt.println("Attack!")
+}
+
+ai_move_to_closest_enemy :: proc(data: rawptr) {
+	fmt.println("Let's move!")
+}

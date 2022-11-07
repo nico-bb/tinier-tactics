@@ -115,12 +115,8 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		},
 		character_node,
 	)
+	iris.flag_model_node_as_dynamic(c.player)
 
-	// c.player = iris.model_node_from_mesh(c.scene, c.character_mesh, c.character_material)
-	// c.player.local_bounds = iris.bounding_box_from_min_max(
-	// 	iris.Vector3{-0.5, -0.5, -0.5},
-	// 	iris.Vector3{0.5, 0.5, 0.5},
-	// )
 	iris.node_local_transform(c.player, iris.transform(t = {0, 0, 1}))
 
 	enemy_parent := iris.new_node(c.scene, iris.Empty_Node, character_node.global_transform)
@@ -159,6 +155,7 @@ init_combat_context :: proc(c: ^Combat_Context) {
 
 	// Controllers
 	init_controllers(c, &c.player_controller)
+	init_ai_controller(c)
 	init_simulation(c)
 }
 
@@ -341,53 +338,6 @@ init_grid :: proc(c: ^Combat_Context) {
 	wood_tile_node, exist := gltf.find_node_with_name(&wood_tile_doc, "floor_A")
 	assert(exist)
 
-	// mesh_node := iris.new_node(c.scene, iris.Model_Node)
-	// iris.model_node_from_gltf(
-	// 	mesh_node,
-	// 	iris.Model_Loader{
-	// 		flags = {.Load_Position, .Load_Normal, .Load_TexCoord0},
-	// 		shader_ref = c.character_material.shader,
-	// 		shader_spec = c.default_spec,
-	// 		rigged = false,
-	// 	},
-	// 	wood_tile_node,
-	// )
-	// iris.set_material_map(
-	// 	mesh_node.materials[0],
-	// 	.Diffuse0,
-	// 	iris.texture_resource(
-	// 		iris.Texture_Loader{
-	// 			info = iris.File_Texture_Info{path = "textures/grid_texture.png"},
-	// 			filter = .Nearest,
-	// 			wrap = .Repeat,
-	// 			space = .sRGB,
-	// 		},
-	// 	).data.(^iris.Texture),
-	// )
-	// iris.insert_node(c.scene, mesh_node)
-
-	// tile_mesh := iris.plane_mesh(1, 1, 1, 1, 1).data.(^iris.Mesh)
-	// c.tile_material_default =
-	// iris.material_resource(
-	// 	iris.Material_Loader{
-	// 		name = "tile",
-	// 		shader = c.character_material.shader,
-	// 		specialization = c.default_spec,
-	// 	},
-	// ).data.(^iris.Material)
-	// iris.set_material_map(
-	// 	c.tile_material_default,
-	// 	.Diffuse0,
-	// 	iris.texture_resource(
-	// 		iris.Texture_Loader{
-	// 			info = iris.File_Texture_Info{path = "textures/grid_texture.png"},
-	// 			filter = .Nearest,
-	// 			wrap = .Repeat,
-	// 			space = .sRGB,
-	// 		},
-	// 	).data.(^iris.Texture),
-	// )
-
 	tiles_parent := iris.new_node(c.scene, iris.Empty_Node)
 	iris.insert_node(c.scene, tiles_parent)
 	c.grid = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
@@ -510,13 +460,13 @@ init_simulation :: proc(c: ^Combat_Context) {
 		Character_Info{
 			node = c.enemy,
 			kind = .Computer,
-			team = {.Team_A},
+			team = {.Team_B},
 			stats = {Stat_Kind.Health = stat(10), Stat_Kind.Speed = stat(3)},
 		},
 	)
 
 	move_character_to_tile(c, &c.characters[0], Tile_Coordinate{0, 0})
-	move_character_to_tile(c, &c.characters[1], Tile_Coordinate{3, 4})
+	move_character_to_tile(c, &c.characters[1], Tile_Coordinate{2, 2})
 
 	// Sort by speed
 	it := sort.Interface {
@@ -825,6 +775,8 @@ Tile_Result :: enum {
 	Blocked,
 }
 
+Tile_Result_Mask :: distinct bit_set[Tile_Result]
+
 Empty_Tile :: struct {}
 
 coord_to_index :: proc(coord: Tile_Coordinate) -> int {
@@ -914,6 +866,7 @@ move_character_to_tile_coord :: proc(
 adjacent_tiles :: proc(
 	c: ^Combat_Context,
 	coord: Tile_Coordinate,
+	with_blocked_tiles := false,
 ) -> (
 	result: [4]Maybe(Tile_Info),
 ) {
@@ -925,9 +878,18 @@ adjacent_tiles :: proc(
 	}
 
 	for direction in iris.Direction {
+		RESULT_MASK :: Tile_Result_Mask{.Ok, .Blocked}
+
 		index := coord_to_index(adjacents[direction])
-		if tile_query(c, adjacents[direction]) == .Ok {
-			result[direction] = c.grid[index]
+		t_result := tile_query(c, adjacents[direction])
+		if with_blocked_tiles {
+			if t_result in RESULT_MASK {
+				result[direction] = c.grid[index]
+			}
+		} else {
+			if t_result == .Ok {
+				result[direction] = c.grid[index]
+			}
 		}
 	}
 
@@ -1242,18 +1204,6 @@ Character_Kind :: enum {
 advance_simulation :: proc(ctx: ^Combat_Context) {
 	character_take_damage :: proc(ctx: ^Combat_Context, id: Turn_ID, amount: int) {
 		decrease_stat(&ctx.characters[id].stats[Stat_Kind.Health], amount)
-	}
-
-	compute_ai_action :: proc(
-		ctx: ^Combat_Context,
-		info: ^Character_Info,
-	) -> (
-		action: Combat_Action,
-		done: bool,
-	) {
-		action = Nil_Action{}
-		done = true
-		return
 	}
 
 	// Player specific procedures
