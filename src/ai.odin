@@ -8,7 +8,7 @@ import "lib:iris/allocators"
 Behavior_Tree :: struct {
 	blackboard: Behavior_Blackboard,
 	root:       ^Behavior_Node,
-	current:    ^Behavior_Node,
+	current:    Maybe(^Behavior_Node),
 	free_list:  allocators.Free_List_Allocator,
 	allocator:  mem.Allocator,
 }
@@ -52,7 +52,7 @@ Behavior_Condition_Node :: struct {
 Behavior_Action_Node :: struct {
 	using base:  Behavior_Node,
 	user_data:   rawptr,
-	effect_proc: proc(data: rawptr),
+	effect_proc: proc(data: rawptr) -> (done: bool),
 }
 
 // Pack both sequence and fallback
@@ -137,32 +137,40 @@ destroy_behavior_node :: proc(bt: ^Behavior_Tree, node: ^Behavior_Node) {
 }
 
 // probably need to pass the AI_Controller structure
-execute_node :: proc(node: ^Behavior_Node) -> (result: Behavior_Result) {
+execute_node :: proc(bt: ^Behavior_Tree, node: ^Behavior_Node) -> (result: Behavior_Result) {
 	switch d in node.derived {
 	case ^Behavior_Condition_Node:
 		condition_ok := d.condition_proc(d.user_data)
 		result = .Success if condition_ok else .Failure
 
 	case ^Behavior_Action_Node:
-		d.effect_proc(d.user_data)
-		result = .Success
+		done := d.effect_proc(d.user_data)
+		result = .Success if done else .In_Process
 
 	case ^Behavior_Composite_Node:
 		for child in d.children {
-			child_result := execute_node(child)
+			child_result := execute_node(bt, child)
 			if child_result in d.expected {
 				result = .Success
 				return
 			}
 		}
 	case ^Behavior_Branch_Node:
-		if execute_node(d.condtion) == .Success {
-			execute_node(d.left)
+		if execute_node(bt, d.condtion) == .Success {
+			execute_node(bt, d.left)
 		} else {
-			execute_node(d.right)
+			execute_node(bt, d.right)
 		}
 	}
 	return
+}
+
+execute_behavior :: proc(bt: ^Behavior_Tree) {
+	if bt.current != nil {
+		execute_node(bt, bt.current.?)
+	} else {
+		execute_node(bt, bt.root)
+	}
 }
 
 AI_Controller :: struct {
@@ -172,6 +180,12 @@ AI_Controller :: struct {
 	agent_info:      ^Character_Info,
 	target_info:     ^Character_Info,
 	buffered_action: Combat_Action,
+
+	// Navigation
+	path_buf:        [50]Tile_Info,
+	path:            []Tile_Info,
+	path_count:      int,
+	path_index:      int,
 }
 
 AI_Data_Kind :: enum {
@@ -213,7 +227,7 @@ compute_ai_action :: proc(
 	ai := &ctx.ai_controller
 	ai.agent_info = info
 
-	execute_node(ai.b_tree.root)
+	execute_node(&ai.b_tree, ai.b_tree.root)
 
 	action = Nil_Action{}
 	done = true
@@ -245,5 +259,21 @@ ai_attack_enemy :: proc(data: rawptr) {
 }
 
 ai_move_to_closest_enemy :: proc(data: rawptr) {
-	fmt.println("Let's move!")
+	ai := cast(^AI_Controller)data
+	target := find_closest_target(ai.ctx, ai.agent_info.coord, ai.agent_info.team)
+
+	if target != nil {
+		ai.path, ai.path_count, _ = path_to_tile(
+			ai.ctx,
+			Path_Options{
+				start = ai.agent_info.coord,
+				end = target.?.coord,
+				include_start = true,
+				include_end = false,
+			},
+			ai.path_buf[:],
+		)
+	}
+
+	fmt.printf("Let's move to: %v!", target.?.coord)
 }

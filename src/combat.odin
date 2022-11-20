@@ -628,9 +628,12 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 					exist: bool
 					_, pc.path_length, exist = path_to_tile(
 						pc.ctx,
-						pc.character_info.coord,
-						index_to_coord(tile.index),
-						true,
+						Path_Options{
+							start = pc.character_info.coord,
+							end = index_to_coord(tile.index),
+							include_start = true,
+							include_end = true,
+						},
 						pc.path[:],
 					)
 					pc.path_index = 0
@@ -794,6 +797,13 @@ index_to_world :: proc(index: int) -> iris.Vector3 {
 	y := index / GRID_WIDTH
 
 	return {f32(x) - GRID_ORIGIN_X, 0.0, f32(y) - GRID_ORIGIN_Y}
+}
+
+distance_squared :: proc(a, b: Tile_Coordinate) -> f32 {
+	va := iris.Vector2{f32(a.x), f32(a.y)}
+	vb := iris.Vector2{f32(b.x), f32(b.y)}
+
+	return linalg.vector_length2(vb - va)
 }
 
 tile_query :: proc(c: ^Combat_Context, coord: Tile_Coordinate) -> (result: Tile_Result) {
@@ -991,14 +1001,18 @@ tiles_in_range :: proc(
 	return closed_set[:], len(closed_set), true
 }
 
+Path_Options :: struct {
+	start, end:    Tile_Coordinate,
+	include_start: bool,
+	include_end:   bool,
+}
+
 // This path searching implementation is O(n) (we use a linear search for the min)
 // This isn't the best but considering that the
 // combat grids are pretty small, it shouldn't matter much
 path_to_tile :: proc(
 	c: ^Combat_Context,
-	start: Tile_Coordinate,
-	end: Tile_Coordinate,
-	include_start: bool,
+	opt: Path_Options,
 	buf: []Tile_Info,
 ) -> (
 	path: []Tile_Info,
@@ -1035,9 +1049,12 @@ path_to_tile :: proc(
 		return -1, false
 	}
 
-	start_index := coord_to_index(start)
-	end_index := coord_to_index(end)
-	if (include_start && tile_query(c, start) != .Ok) && tile_query(c, end) != .Ok {
+	start_index := coord_to_index(opt.start)
+	end_index := coord_to_index(opt.end)
+
+	start_ok := (opt.include_start && tile_query(c, opt.start) != .Ok)
+	end_ok := (opt.include_end && tile_query(c, opt.end) != .Ok)
+	if !start_ok && !end_ok {
 		return {}, -1, false
 	}
 
@@ -1070,7 +1087,7 @@ path_to_tile :: proc(
 					data   = adjacent,
 					parent = &closed_set[len(closed_set) - 1],
 					g_cost = current.g_cost + 1,
-					h_cost = heuristic(index_to_coord(adjacent.index), end),
+					h_cost = heuristic(index_to_coord(adjacent.index), opt.end),
 				}
 				next.f_cost = next.g_cost + next.h_cost
 
@@ -1103,13 +1120,16 @@ path_to_tile :: proc(
 	current := end_node
 	for {
 		if current.parent == nil {
-			if include_start {
+			if opt.include_start {
 				append(&path_buf, current.data)
 			}
 			break
 		}
 		append(&path_buf, current.data)
 		current = current.parent.?
+	}
+	if !opt.include_end {
+		ordered_remove(&path_buf, 0)
 	}
 	slice.reverse(path_buf[:])
 
@@ -1290,4 +1310,23 @@ advance_simulation :: proc(ctx: ^Combat_Context) {
 		case .Computer:
 		}
 	}
+}
+
+find_closest_target :: proc(
+	ctx: ^Combat_Context,
+	from: Tile_Coordinate,
+	mask: Team_Mask,
+) -> (
+	result: Maybe(^Character_Info),
+) {
+	current := distance_squared(from, Tile_Coordinate{9999, 9999})
+
+	for character, i in &ctx.characters {
+		dist := distance_squared(from, character.coord)
+		if dist < current && character.team != mask {
+			current = dist
+			result = &ctx.characters[i]
+		}
+	}
+	return result
 }
