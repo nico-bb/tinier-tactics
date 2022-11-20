@@ -2,6 +2,8 @@ package main
 
 import "core:fmt"
 import "core:mem"
+import "core:math/linalg"
+import "lib:iris"
 import "lib:iris/allocators"
 
 // Do we need to be able to traverse the tree bottom-up?
@@ -150,16 +152,20 @@ execute_node :: proc(bt: ^Behavior_Tree, node: ^Behavior_Node) -> (result: Behav
 	case ^Behavior_Composite_Node:
 		for child in d.children {
 			child_result := execute_node(bt, child)
-			if child_result in d.expected {
-				result = .Success
+			switch {
+			case child_result == .In_Process:
+				result = child_result
+				return
+			case child_result not_in d.expected:
+				result = .Failure
 				return
 			}
 		}
 	case ^Behavior_Branch_Node:
 		if execute_node(bt, d.condtion) == .Success {
-			execute_node(bt, d.left)
+			result = execute_node(bt, d.left)
 		} else {
-			execute_node(bt, d.right)
+			result = execute_node(bt, d.right)
 		}
 	}
 	return
@@ -174,18 +180,26 @@ execute_behavior :: proc(bt: ^Behavior_Tree) {
 }
 
 AI_Controller :: struct {
-	ctx:             ^Combat_Context,
-	b_tree:          Behavior_Tree,
-	mem_buffer:      [mem.Kilobyte * 32]byte,
-	agent_info:      ^Character_Info,
-	target_info:     ^Character_Info,
-	buffered_action: Combat_Action,
+	ctx:                ^Combat_Context,
+	b_tree:             Behavior_Tree,
+	mem_buffer:         [mem.Kilobyte * 32]byte,
+	agent_info:         ^Character_Info,
+	target_info:        ^Character_Info,
+	buffered_action:    Combat_Action,
 
 	// Navigation
-	path_buf:        [50]Tile_Info,
-	path:            []Tile_Info,
-	path_count:      int,
-	path_index:      int,
+	dt:                 f32,
+	path_acquired:      bool,
+	path_buf:           [50]Tile_Info,
+	path:               []Tile_Info,
+	path_length:        int,
+	path_index:         int,
+
+	// Movement Animations
+	animation_offset:   f32,
+	movement_animation: iris.Animation_Player,
+	direction:          iris.Vector3,
+	position:           iris.Vector3,
 }
 
 AI_Data_Kind :: enum {
@@ -209,10 +223,7 @@ init_ai_controller :: proc(ctx: ^Combat_Context) {
 				&ai.b_tree,
 				Behavior_Action_Node{user_data = ai, effect_proc = ai_attack_enemy},
 			),
-			right = new_behavior_node_from(
-				&ai.b_tree,
-				Behavior_Action_Node{user_data = ai, effect_proc = ai_move_to_closest_enemy},
-			),
+			right = ai_move_sub_tree(ai),
 		},
 	)
 }
@@ -226,18 +237,121 @@ compute_ai_action :: proc(
 ) {
 	ai := &ctx.ai_controller
 	ai.agent_info = info
+	ai.dt = f32(iris.elapsed_time())
+	ai.buffered_action = Nil_Action{}
 
-	execute_node(&ai.b_tree, ai.b_tree.root)
+	result := execute_node(&ai.b_tree, ai.b_tree.root)
+	switch result {
+	case .Failure:
+		assert(false)
+	case .In_Process:
+		done = false
+	case .Success:
+		done = true
+	}
 
-	action = Nil_Action{}
-	done = true
+	action = ai.buffered_action
 	return
+}
+
+ai_move_sub_tree :: proc(ai: ^AI_Controller) -> ^Behavior_Node {
+	sub := new_behavior_node(&ai.b_tree, Behavior_Composite_Node)
+	sub.expected = {.Success}
+
+	enemy_in_range := new_behavior_node_from(&ai.b_tree, Behavior_Condition_Node {
+		user_data = ai,
+		condition_proc = proc(data: rawptr) -> (ok: bool) {
+			ai := cast(^AI_Controller)data
+			if ai.target_info != nil {
+				ok = true
+			} else {
+				target := find_closest_target(ai.ctx, ai.agent_info.coord, ai.agent_info.team)
+				if target != nil {
+					ai.target_info = target.?
+					ok = true
+				}
+			}
+			return
+		},
+	})
+	get_path := new_behavior_node_from(&ai.b_tree, Behavior_Condition_Node {
+		user_data = ai,
+		condition_proc = proc(data: rawptr) -> (ok: bool) {
+			ai := cast(^AI_Controller)data
+			if ai.path_acquired {
+				ok = true
+				return
+			}
+			ai.path, ai.path_length, ok = path_to_tile(
+				ai.ctx,
+				Path_Options{
+					start = ai.agent_info.coord,
+					end = ai.target_info.coord,
+					include_start = true,
+					include_end = false,
+					mask = {.Ok, .Blocked},
+				},
+				ai.path_buf[:],
+			)
+			ai.path_acquired = ok
+			ai.path_index = 0
+			first := index_to_world(ai.path[0].index)
+			then := index_to_world(ai.path[1].index)
+			ai.direction = linalg.vector_normalize(then - first)
+			ai.position = iris.translation_from_matrix(ai.agent_info.node.local_transform)
+			return
+		},
+	})
+
+	move_along := new_behavior_node_from(&ai.b_tree, Behavior_Action_Node {
+			user_data = ai,
+			effect_proc = proc(data: rawptr) -> (done: bool) {
+				ai := cast(^AI_Controller)data
+				step_done := iris.advance_animation(&ai.movement_animation, ai.dt)
+
+				fmt.println(ai.animation_offset)
+				displacement := ai.direction * ai.animation_offset
+				pos := ai.position + displacement
+				iris.node_local_transform(
+					ai.agent_info.node,
+					iris.transform(t = pos, s = CHARACTER_SCALE),
+				)
+
+				if step_done {
+					ai.path_index += 1
+					if ai.path_index < ai.path_length - 1 {
+						current := index_to_world(ai.path[ai.path_index].index)
+						next := index_to_world(ai.path[ai.path_index + 1].index)
+
+						ai.position = current
+						ai.direction = linalg.vector_normalize(next - current)
+						iris.reset_animation(&ai.movement_animation)
+						ai.movement_animation.playing = true
+					}
+				}
+
+				done = !(ai.path_index < 2) || ai.path_index >= ai.path_length - 1
+				if done {
+					ai.path_index = 0
+					ai.path_acquired = false
+					ai.buffered_action = Move_Action {
+						from = ai.agent_info.coord,
+						to   = index_to_coord(ai.path[ai.path_length - 1].index),
+					}
+				}
+				return
+			},
+		})
+
+	append(&sub.children, enemy_in_range, get_path, move_along)
+
+	return sub
 }
 
 ai_enemy_in_close_range :: proc(data: rawptr) -> bool {
 	ai := cast(^AI_Controller)data
 
-	adjacents := adjacent_tiles(c = ai.ctx, coord = ai.agent_info.coord, with_blocked_tiles = true)
+	adjacents := adjacent_tiles(c = ai.ctx, coord = ai.agent_info.coord, mask = {.Ok, .Blocked})
 	for adj in adjacents {
 		if adj != nil {
 			adjacent := adj.?
@@ -254,26 +368,29 @@ ai_enemy_in_close_range :: proc(data: rawptr) -> bool {
 	return false
 }
 
-ai_attack_enemy :: proc(data: rawptr) {
+ai_attack_enemy :: proc(data: rawptr) -> bool {
 	fmt.println("Attack!")
+	return true
 }
 
-ai_move_to_closest_enemy :: proc(data: rawptr) {
+ai_move_to_closest_enemy :: proc(data: rawptr) -> bool {
 	ai := cast(^AI_Controller)data
 	target := find_closest_target(ai.ctx, ai.agent_info.coord, ai.agent_info.team)
 
 	if target != nil {
-		ai.path, ai.path_count, _ = path_to_tile(
+		ai.path, ai.path_length, _ = path_to_tile(
 			ai.ctx,
 			Path_Options{
 				start = ai.agent_info.coord,
 				end = target.?.coord,
 				include_start = true,
 				include_end = false,
+				mask = {.Ok, .Blocked},
 			},
 			ai.path_buf[:],
 		)
 	}
 
 	fmt.printf("Let's move to: %v!", target.?.coord)
+	return true
 }

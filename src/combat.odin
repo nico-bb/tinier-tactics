@@ -148,8 +148,8 @@ init_combat_context :: proc(c: ^Combat_Context) {
 	init_grid(c)
 
 	// Controllers
-	init_controllers(c, &c.player_controller)
 	init_ai_controller(c)
+	init_controllers(c, &c.player_controller, &c.ai_controller)
 	init_simulation(c)
 }
 
@@ -377,7 +377,7 @@ init_grid :: proc(c: ^Combat_Context) {
 	).data.(^iris.Material)
 }
 
-init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
+init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller, ai: ^AI_Controller) {
 	pc.ctx = c
 	pc.tiles = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
 	pc.path = make([]Tile_Info, GRID_WIDTH * GRID_HEIGHT)
@@ -438,6 +438,11 @@ init_controllers :: proc(c: ^Combat_Context, pc: ^Player_Controller) {
 		pc.movement_animation.targets[0] = &pc.animation_offset
 		pc.movement_animation.targets_start_value[0] = f32(0)
 		iris.reset_animation(&pc.movement_animation)
+
+		ai.movement_animation = iris.make_animation_player(animation)
+		ai.movement_animation.targets[0] = &ai.animation_offset
+		ai.movement_animation.targets_start_value[0] = f32(0)
+		iris.reset_animation(&ai.movement_animation)
 	}
 }
 
@@ -633,6 +638,7 @@ compute_player_action :: proc(pc: ^Player_Controller) -> (action: Combat_Action,
 							end = index_to_coord(tile.index),
 							include_start = true,
 							include_end = true,
+							mask = {.Ok},
 						},
 						pc.path[:],
 					)
@@ -875,7 +881,7 @@ move_character_to_tile_coord :: proc(
 adjacent_tiles :: proc(
 	c: ^Combat_Context,
 	coord: Tile_Coordinate,
-	with_blocked_tiles := false,
+	mask: Tile_Result_Mask,
 ) -> (
 	result: [4]Maybe(Tile_Info),
 ) {
@@ -891,15 +897,18 @@ adjacent_tiles :: proc(
 
 		index := coord_to_index(adjacents[direction])
 		t_result := tile_query(c, adjacents[direction])
-		if with_blocked_tiles {
-			if t_result in RESULT_MASK {
-				result[direction] = c.grid[index]
-			}
-		} else {
-			if t_result == .Ok {
-				result[direction] = c.grid[index]
-			}
+		if t_result in mask {
+			result[direction] = c.grid[index]
 		}
+		// if with_blocked_tiles {
+		// 	if t_result in RESULT_MASK {
+		// 		result[direction] = c.grid[index]
+		// 	}
+		// } else {
+		// 	if t_result == .Ok {
+		// 		result[direction] = c.grid[index]
+		// 	}
+		// }
 	}
 
 	return
@@ -971,7 +980,7 @@ tiles_in_range :: proc(
 			tile := pop(&open_set)
 			append(&closed_set, tile)
 
-			adjacents := adjacent_tiles(c, index_to_coord(tile.index))
+			adjacents := adjacent_tiles(c, index_to_coord(tile.index), {.Ok})
 			for adjacent in adjacents {
 				if adjacent != nil {
 					adj := adjacent.?
@@ -1005,6 +1014,7 @@ Path_Options :: struct {
 	start, end:    Tile_Coordinate,
 	include_start: bool,
 	include_end:   bool,
+	mask:          Tile_Result_Mask,
 }
 
 // This path searching implementation is O(n) (we use a linear search for the min)
@@ -1078,7 +1088,7 @@ path_to_tile :: proc(
 		unordered_remove(&open_set, min_index)
 		append(&closed_set, current)
 
-		adjacents := adjacent_tiles(c, index_to_coord(current.data.index))
+		adjacents := adjacent_tiles(c, index_to_coord(current.data.index), opt.mask)
 		search_adjacents: for adj in adjacents {
 			if adj != nil {
 				adjacent := adj.?
