@@ -46,7 +46,6 @@ GRID_HEIGHT :: 5
 CHARACTER_SCALE :: iris.Vector3{0.5, 0.5, 0.5}
 
 init_combat_context :: proc(c: ^Combat_Context) {
-	iris.add_light(.Directional, iris.Vector3{2, 3, 2}, {100, 100, 90, 1}, true)
 
 	shader, shader_exist := iris.shader_from_name("deferred_geometry")
 	assert(shader_exist)
@@ -102,6 +101,18 @@ init_combat_context :: proc(c: ^Combat_Context) {
 
 	c.scene = iris.scene_resource("combat", {.Draw_Debug_Collisions}).data.(^iris.Scene)
 	camera := iris.new_default_camera(c.scene)
+
+	sun_node := iris.new_node_from(
+		c.scene,
+		iris.Light_Node{
+			direction = iris.Vector3{-2, -3, -2},
+			color = iris.Color{100, 100, 90, 1},
+			options = {.Shadow_Map},
+			shadow_map = iris.Shadow_Map{scale = 2},
+		},
+	)
+	iris.node_local_transform(sun_node, iris.transform(t = iris.Vector3{2, 3, 2}))
+	iris.insert_node(c.scene, sun_node)
 
 	player_parent := iris.new_node(c.scene, iris.Empty_Node, character_node.global_transform)
 	iris.insert_node(c.scene, player_parent)

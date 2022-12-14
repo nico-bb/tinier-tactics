@@ -372,25 +372,3 @@ ai_attack_enemy :: proc(data: rawptr) -> bool {
 	fmt.println("Attack!")
 	return true
 }
-
-ai_move_to_closest_enemy :: proc(data: rawptr) -> bool {
-	ai := cast(^AI_Controller)data
-	target := find_closest_target(ai.ctx, ai.agent_info.coord, ai.agent_info.team)
-
-	if target != nil {
-		ai.path, ai.path_length, _ = path_to_tile(
-			ai.ctx,
-			Path_Options{
-				start = ai.agent_info.coord,
-				end = target.?.coord,
-				include_start = true,
-				include_end = false,
-				mask = {.Ok, .Blocked},
-			},
-			ai.path_buf[:],
-		)
-	}
-
-	fmt.printf("Let's move to: %v!", target.?.coord)
-	return true
-}

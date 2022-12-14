@@ -26,27 +26,26 @@ struct Light {
 };
 const uint DIRECTIONAL_LIGHT = 0;
 const uint POINT_LIGHT = 1;
-const int MAX_LIGHTS = 128;
-const int MAX_LIGHT_CASTERS = 4;
+const int MAX_LIGHTS = 32;
+const int MAX_SHADOW_MAPS = 1;
 layout (std140, binding = 1) uniform LightingContext {
     Light lights[MAX_LIGHTS];
-    uvec4 shadowCasters[MAX_LIGHT_CASTERS];  // IDs of the lights used for shadow mapping
-    mat4 matLightSpaces[MAX_LIGHT_CASTERS];  // Space matrices of the lights used for shadow mapping
+    uvec4 shadowCasters[MAX_SHADOW_MAPS];  // IDs of the lights used for shadow mapping
+    mat4 matLightSpaces[MAX_SHADOW_MAPS];  // Space matrices of the lights used for shadow mapping
     vec4 ambient;                            // .rgb for the color and .a for the intensity
     uint lightCount;
     uint shadowCasterCount;
-    vec2 shadowMapSize;
+    vec2 shadowMapSizes[MAX_SHADOW_MAPS];
 };
 
 uniform sampler2D bufferedPosition;
 uniform sampler2D bufferedNormal;
 uniform sampler2D bufferedAlbedo;
 uniform sampler2D bufferedDepth;
-uniform sampler2D mapShadow;
+uniform sampler2D shadowMaps[MAX_SHADOW_MAPS];
 
 vec3 computeDirectionalLighting( Light light, vec3 p, vec3 n );
 vec3 computePointLighting( Light light, vec3 p, vec3 n );
-float sampleShadowMap (int casterIndex, vec2 texCoord);
 float computeShadowValue(int casterIndex, vec3 position, vec3 normal);
 vec3 applyAtmosphericFog(in vec3 texelClr, float dist, vec3 viewDir, vec3 lightDir);
 
@@ -113,34 +112,13 @@ vec3 computePointLighting( Light light, vec3 p, vec3 n ) {
     return (diffuse * attenuation) + (specular * attenuation);
 }
 
-float sampleShadowMap (int casterIndex, vec2 texCoord) {
-    vec2 tileSize = vec2(
-        shadowMapSize.x / 2,
-        shadowMapSize.y / float(MAX_LIGHT_CASTERS));
-    vec2 tileCoord = vec2(
-        tileSize.x,
-        tileSize.y * float(casterIndex));
-
-    vec2 pixelCoord = vec2(
-        tileCoord.x + (tileSize.x * texCoord.x), 
-        tileCoord.y + (tileSize.y * texCoord.y));
-    vec2 absUVCoord = vec2(
-        pixelCoord.x / shadowMapSize.x,
-        pixelCoord.y / shadowMapSize.y);
-
-    bvec2 inBoundsMin = greaterThanEqual(pixelCoord, tileCoord); 
-    bvec2 inBoundsMax = lessThanEqual(pixelCoord, tileCoord + tileSize);
-    float result = all(inBoundsMin) && all(inBoundsMax) ? texture(mapShadow, absUVCoord).r : 1.0;
-    return result;
-}
-
 float computeShadowValue(int casterIndex, vec3 position, vec3 normal) {
     uint lightID = shadowCasters[casterIndex].x;
     Light light = lights[lightID];
     vec3 lightDir = normalize(light.position.xyz);
     vec4 lightSpacePosition = matLightSpaces[lightID] * vec4(position, 1.0);
-    float bias = 0.05 * (1.0 - dot(normal, lightDir));
-	bias = max(bias, 0.005);
+    float bias = 0.0024 * (1.0 - dot(normal, lightDir));
+	bias = max(bias, 0.0024);
 
     vec3 projCoord = lightSpacePosition.xyz / lightSpacePosition.w;
     if (projCoord.z > 1.0) {
@@ -150,20 +128,21 @@ float computeShadowValue(int casterIndex, vec3 position, vec3 normal) {
     float currentDepth = projCoord.z;
 
 
-    vec2 tileSize = vec2(
-        shadowMapSize.x / 2,
-        shadowMapSize.x / float(MAX_LIGHT_CASTERS));
+    // vec2 tileSize = vec2(
+    //     shadowMapSize.x / 2,
+    //     shadowMapSize.x / float(MAX_SHADOW_MAPS));
     float result = 0.0;
-    vec2 texelSize = 1.0 / tileSize;
+    vec2 texelSize = 1.0 / textureSize(shadowMaps[casterIndex], 0);
     for (int x = -1; x <= 1; x += 1) {
         for (int y = -1; y <= 1; y += 1) {
             vec2 pcfCoord = projCoord.xy + vec2(x, y) * texelSize;
-            float pcfDepth = sampleShadowMap(casterIndex, pcfCoord);
+            float pcfDepth = texture(shadowMaps[casterIndex], pcfCoord).r;
             result += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
         }
     }
     result /= 9.0;
     return result;
+    return 0.0;
 }
 
 vec3 applyAtmosphericFog(in vec3 texelClr, float dist, vec3 viewDir, vec3 lightDir) {
@@ -181,3 +160,10 @@ vec3 applyAtmosphericFog(in vec3 texelClr, float dist, vec3 viewDir, vec3 lightD
     vec3 result = mix(texelClr, fogClr, fogContribution);
     return result;
 }
+
+////////////////
+/*
+    PBR SANDBOX
+*/
+
+
