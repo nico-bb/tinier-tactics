@@ -28,21 +28,26 @@ const uint DIRECTIONAL_LIGHT = 0;
 const uint POINT_LIGHT = 1;
 const int MAX_LIGHTS = 32;
 const int MAX_SHADOW_MAPS = 1;
+const int MAXS_SHADOW_CASCADE = 3;
 layout (std140, binding = 1) uniform LightingContext {
     Light lights[MAX_LIGHTS];
-    uvec4 shadowCasters[MAX_SHADOW_MAPS];  // IDs of the lights used for shadow mapping
-    mat4 matLightSpaces[MAX_SHADOW_MAPS];  // Space matrices of the lights used for shadow mapping
+    // ID of the lights used for shadow mapping in the x component
+    // Number of cascade in the y component
+    uvec4 shadowCasters[MAX_SHADOW_MAPS];
+    // Space matrices of the lights used for shadow mapping
+    mat4 matLightSpaces[MAX_SHADOW_MAPS][MAXS_SHADOW_CASCADE];
+    // FIXME: Temporary uvec4 for padding related reasons
+    vec4 cascadesDistances[MAX_SHADOW_MAPS];
     vec4 ambient;                            // .rgb for the color and .a for the intensity
     uint lightCount;
     uint shadowCasterCount;
-    vec2 shadowMapSizes[MAX_SHADOW_MAPS];
 };
 
 uniform sampler2D bufferedPosition;
 uniform sampler2D bufferedNormal;
 uniform sampler2D bufferedAlbedo;
 uniform sampler2D bufferedDepth;
-uniform sampler2D shadowMaps[MAX_SHADOW_MAPS];
+uniform sampler2D shadowMaps[MAX_SHADOW_MAPS * MAXS_SHADOW_CASCADE];
 
 vec3 computeDirectionalLighting( Light light, vec3 p, vec3 n );
 vec3 computePointLighting( Light light, vec3 p, vec3 n );
@@ -114,9 +119,25 @@ vec3 computePointLighting( Light light, vec3 p, vec3 n ) {
 
 float computeShadowValue(int casterIndex, vec3 position, vec3 normal) {
     uint lightID = shadowCasters[casterIndex].x;
+    const uint cascadeCount = shadowCasters[casterIndex].y;
     Light light = lights[lightID];
+    
+    vec4 viewSpacePosition = matView * vec4(position, 1.0);
+    float depthValue = abs(viewSpacePosition.z);
+    int cascadeIndex = -1;
+    for (int i = 0; i < cascadeCount - 1; i += 1) {
+        if (depthValue < cascadesDistances[casterIndex][i]) {
+            cascadeIndex = i;
+            break;
+        }
+    }
+
+    if (cascadeIndex == -1) {
+        cascadeIndex = int(cascadeCount -1);
+    }
+
     vec3 lightDir = normalize(light.position.xyz);
-    vec4 lightSpacePosition = matLightSpaces[lightID] * vec4(position, 1.0);
+    vec4 lightSpacePosition = matLightSpaces[casterIndex][cascadeIndex] * vec4(position, 1.0);
     float bias = 0.0024 * (1.0 - dot(normal, lightDir));
 	bias = max(bias, 0.0024);
 
@@ -127,16 +148,13 @@ float computeShadowValue(int casterIndex, vec3 position, vec3 normal) {
     projCoord = projCoord * 0.5 + 0.5;
     float currentDepth = projCoord.z;
 
-
-    // vec2 tileSize = vec2(
-    //     shadowMapSize.x / 2,
-    //     shadowMapSize.x / float(MAX_SHADOW_MAPS));
+    const uint shadowMapIndex = casterIndex * MAXS_SHADOW_CASCADE + cascadeIndex;
     float result = 0.0;
     vec2 texelSize = 1.0 / textureSize(shadowMaps[casterIndex], 0);
     for (int x = -1; x <= 1; x += 1) {
         for (int y = -1; y <= 1; y += 1) {
             vec2 pcfCoord = projCoord.xy + vec2(x, y) * texelSize;
-            float pcfDepth = texture(shadowMaps[casterIndex], pcfCoord).r;
+            float pcfDepth = texture(shadowMaps[shadowMapIndex], pcfCoord).r;
             result += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
         }
     }

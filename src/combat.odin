@@ -108,7 +108,7 @@ init_combat_context :: proc(c: ^Combat_Context) {
 			direction = iris.Vector3{-2, -3, -2},
 			color = iris.Color{100, 100, 90, 1},
 			options = {.Shadow_Map},
-			shadow_map = iris.Shadow_Map{scale = 2},
+			shadow_map = iris.Shadow_Map{scale = 3, cascade_count = 3},
 		},
 	)
 	iris.node_local_transform(sun_node, iris.transform(t = iris.Vector3{2, 3, 2}))
