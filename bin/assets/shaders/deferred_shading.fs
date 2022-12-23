@@ -52,6 +52,7 @@ uniform sampler2D shadowMaps[MAX_SHADOW_MAPS * MAXS_SHADOW_CASCADE];
 vec3 computeDirectionalLighting( Light light, vec3 p, vec3 n );
 vec3 computePointLighting( Light light, vec3 p, vec3 n );
 float computeShadowValue(int casterIndex, vec3 position, vec3 normal);
+float filterShadowMap(uint shadowMapIndex, vec3 shadowCoord, float bias);
 vec3 applyAtmosphericFog(in vec3 texelClr, float dist, vec3 viewDir, vec3 lightDir);
 
 void main() {
@@ -133,91 +134,37 @@ float computeShadowValue(int casterIndex, vec3 position, vec3 normal) {
         vec4 shadowCoord = matLightSpaces[casterIndex][i] * vec4(position, 1.0);
         vec3 nShadowCoord = shadowCoord.xyz / shadowCoord.w;
         nShadowCoord = nShadowCoord * 0.5 + 0.5;
-        if (i == cascadeCount - 1) {
-            const float shadowDepth = texture(shadowMaps[shadowMapIndex], nShadowCoord.xy).r;
-            return  nShadowCoord.z - bias > shadowDepth ? 1.0 : 0.0;
-        } else if (abs(viewCoord.z) < cascadesDistances[casterIndex][i]) {
-            
-            const float shadowDepth = texture(shadowMaps[shadowMapIndex], nShadowCoord.xy).r;
-            return  nShadowCoord.z - bias > shadowDepth ? 1.0 : 0.0;
+        if (i == cascadeCount - 1 || abs(viewCoord.z) < cascadesDistances[casterIndex][i]) {
+            // const float shadowDepth = texture(shadowMaps[shadowMapIndex], nShadowCoord.xy).r;
+            // return  nShadowCoord.z - bias > shadowDepth ? 1.0 : 0.0;
+            return filterShadowMap(shadowMapIndex, nShadowCoord, bias);
         }
     }
 
     return 0.0;
+}
 
-    // vec4 lightSpacePosition = matLightSpaces[casterIndex][cascadeIndex] * vec4(position, 1.0);
+float filterShadowMap(uint shadowMapIndex, vec3 shadowCoord, float bias) {
+    const float shadowDepth = texture(shadowMaps[shadowMapIndex], shadowCoord.xy).r;
+    const float depthDiff = shadowCoord.z - shadowDepth;
 
-    // vec3 projCoord = lightSpacePosition.xyz / lightSpacePosition.w;
-    // if (projCoord.z > 1.0) {
-    //     return 0.0;
-    // }
-
-
-    /*
-    uint lightID = shadowCasters[casterIndex].x;
-    const uint cascadeCount = shadowCasters[casterIndex].y;
-    Light light = lights[lightID];
+    const float kernelSize = max(0.0, 2.0 + (smoothstep(0.0, 0.2, depthDiff) * 5));
+    const int low = -int(floor((kernelSize - 1) / 2.0));
+    const int high = int(ceil((kernelSize - 1) / 2.0));
     
-    vec4 viewSpacePosition = matView * vec4(position, 1.0);
-    float depthValue = abs(viewSpacePosition.z);
-    // int cascadeIndex = -1;
-    // for (int i = 0; i < cascadeCount - 1; i += 1) {
-    //     if (depthValue < cascadesDistances[casterIndex][i]) {
-    //         cascadeIndex = i;
-    //         break;
-    //     }
-    // }
-
-    // if (cascadeIndex == -1) {
-    //     cascadeIndex = int(cascadeCount -1);
-    // }
-    const int cascadeIndex = depthValue < 3.0 ? 0 : 1;
-
-    vec3 lightDir = normalize(light.position.xyz);
-    vec4 lightSpacePosition = matLightSpaces[casterIndex][cascadeIndex] * vec4(position, 1.0);
-    float bias = 0.0024 * (1.0 - dot(normal, lightDir));
-	bias = max(bias, 0.0024);
-
-    vec3 projCoord = lightSpacePosition.xyz / lightSpacePosition.w;
-    if (projCoord.z > 1.0) {
-        return 0.0;
+    const vec2 texelSize = 1.0 / textureSize(shadowMaps[shadowMapIndex], 0); 
+    float result = 0.0;
+    for (int x = low; x <= high; x += 1) {
+        for (int y = low; y <= high; y += 1) {
+           const vec2 filterCoord = shadowCoord.xy + vec2(x, y) * texelSize;
+           const float filterDepth = texture(shadowMaps[shadowMapIndex], filterCoord).r;
+           result += shadowCoord.z - bias > filterDepth ? 1.0 : 0.0;
+        }
     }
 
-    projCoord = projCoord * 0.5 + 0.5;
-    float currentDepth = projCoord.z;
-
-    float result = 0.0;
-    const uint shadowMapIndex = casterIndex * MAXS_SHADOW_CASCADE + cascadeIndex;
-    vec2 texelSize = 1.0 / textureSize(shadowMaps[shadowMapIndex], 0);
-
-    // TODO: Do one depth comparison to determine the best kernel size
-    const float initialDepth = texture(shadowMaps[shadowMapIndex], projCoord.xy).r;
-    const float depthDiff = (currentDepth - bias) - initialDepth;   
-
-    return currentDepth - bias > initialDepth ? 1.0 : 0.0;
-
-    // float kernelSize = 2.0 * sign(depthDiff);
-    // kernelSize = max(0.0, kernelSize);
-    // int lowerKernelBounds = kernelSize < 1.0 ? 1 : -int(
-    //     ceil((kernelSize - 1.0) / 2.0));
-    // int higherKernelBounds = kernelSize < 1.0 ? 0 : int((kernelSize - 1.0) / 2.0);
-
-    // for (int x = lowerKernelBounds; x <= higherKernelBounds; x += 1) {
-    //     for (int y = lowerKernelBounds; y <= higherKernelBounds; y += 1) {
-    //         vec2 pcfCoord = projCoord.xy + vec2(x, y) * texelSize;
-    //         float pcfDepth = texture(shadowMaps[shadowMapIndex], pcfCoord).r;
-    //         result += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
-    //     }
-    // }
-
-    // if (kernelSize > 0) {
-    //     result /= kernelSize * kernelSize;
-    // } else {
-    //     result = 0.0;
-    // }
-    // return result;
-
-    */
+    result /= kernelSize * kernelSize;
+    return result;
+    // return  shadowCoord.z - bias > shadowDepth ? 1.0 : 0.0;
 }
 
 vec3 applyAtmosphericFog(in vec3 texelClr, float dist, vec3 viewDir, vec3 lightDir) {
