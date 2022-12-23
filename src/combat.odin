@@ -128,6 +128,7 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		character_node,
 	)
 	iris.flag_model_node_as_dynamic(c.player)
+	c.player.options += {.Cast_Shadows}
 
 	enemy_parent := iris.new_node(c.scene, iris.Empty_Node, character_node.global_transform)
 	iris.insert_node(c.scene, enemy_parent)
@@ -143,6 +144,7 @@ init_combat_context :: proc(c: ^Combat_Context) {
 		character_node,
 	)
 	iris.flag_model_node_as_dynamic(c.enemy)
+	c.enemy.options += {.Cast_Shadows}
 
 	iris.insert_node(c.scene, camera)
 	iris.insert_node(c.scene, c.player)
