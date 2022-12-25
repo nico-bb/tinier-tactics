@@ -148,7 +148,7 @@ float filterShadowMap(uint shadowMapIndex, vec3 shadowCoord, float bias) {
     const float shadowDepth = texture(shadowMaps[shadowMapIndex], shadowCoord.xy).r;
     const float depthDiff = shadowCoord.z - shadowDepth;
 
-    const float kernelSize = max(0.0, 2.0 + (smoothstep(0.0, 0.2, depthDiff) * 5));
+    const float kernelSize = depthDiff >= 0.01 ? 5.0 : 2.0;
     const int low = -int(floor((kernelSize - 1) / 2.0));
     const int high = int(ceil((kernelSize - 1) / 2.0));
     
